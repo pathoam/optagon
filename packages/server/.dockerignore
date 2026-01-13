@@ -1,0 +1,18 @@
+# Ignore local node_modules (will install fresh in container)
+node_modules
+frame-image/browser-tool/node_modules
+
+# Build artifacts
+dist
+frame-image/browser-tool/dist
+
+# Logs and temp files
+*.log
+.DS_Store
+
+# Tests (not needed in container)
+tests
+
+# Local development files
+.env
+.env.local

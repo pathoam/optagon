@@ -1,0 +1,17 @@
+{
+  "name": "optagon",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Personal software development server with isolated frames",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "bun run --filter @optagon/server dev",
+    "build": "bun run --filter '*' build",
+    "typecheck": "bun run --filter '*' typecheck",
+    "test": "bun run --filter '*' test",
+    "test:unit": "bun run --filter '*' test:unit",
+    "test:integration": "bun run --filter '*' test:integration"
+  }
+}

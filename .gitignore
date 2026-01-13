@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Local forks (separate git repos)
+graphiti/
+opencode/
+guake-opt/
+
+# Legacy code
+optagon-core/
+
+# Local state
+.agent/
+.claude/
+
+# Runtime data
+*.db
+*.db-journal
+*.log
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Test coverage
+coverage/
+.nyc_output/
