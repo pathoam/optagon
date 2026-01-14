@@ -2,6 +2,8 @@
 
 > Draft v1 - January 2026
 
+> **Note**: This spec focused on frame dev server tunneling. For the complete remote access system (PWA, auth, terminal access), see [remote-access-spec.md](./remote-access-spec.md). Infrastructure has been updated from Cloudflare Workers to VPS + Cloudflare proxy for simplicity.
+
 ## Overview
 
 Optagon Tunnel allows developers to expose their local development frames to the internet via `optagon.ai`. This enables:

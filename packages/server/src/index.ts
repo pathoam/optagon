@@ -2,12 +2,14 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { execSync, spawn } from 'child_process';
-import { basename, resolve } from 'path';
-import { existsSync } from 'fs';
+import { basename, resolve, join } from 'path';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { homedir } from 'os';
 import { getFrameManager } from './services/frame-manager.js';
 import { getContainerRuntime } from './services/container-runtime.js';
 import { getPortAllocator } from './services/port-allocator.js';
 import { getConfigManager } from './services/config-manager.js';
+import { createTunnelClient, getTunnelClient, destroyTunnelClient, type TunnelStatus } from './tunnel/index.js';
 import type { FrameStatus } from './types/index.js';
 
 const program = new Command();
@@ -707,5 +709,240 @@ function getStatusColor(status: string): (text: string) => string {
       return chalk.white;
   }
 }
+
+// ===================
+// TUNNEL COMMANDS
+// ===================
+
+const TUNNEL_CONFIG_PATH = join(homedir(), '.optagon', 'tunnel.json');
+
+interface TunnelConfig {
+  serverId?: string;
+  serverName: string;
+  relayUrl: string;
+  enabled: boolean;
+  publicKey?: string;   // Base64 encoded Ed25519 public key
+  privateKey?: string;  // Base64 encoded Ed25519 private key
+}
+
+function loadTunnelConfig(): TunnelConfig | null {
+  try {
+    if (existsSync(TUNNEL_CONFIG_PATH)) {
+      return JSON.parse(readFileSync(TUNNEL_CONFIG_PATH, 'utf-8'));
+    }
+  } catch {
+    // Ignore errors
+  }
+  return null;
+}
+
+function saveTunnelConfig(config: TunnelConfig): void {
+  const dir = join(homedir(), '.optagon');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(TUNNEL_CONFIG_PATH, JSON.stringify(config, null, 2));
+}
+
+const tunnel = program.command('tunnel').description('Manage remote access tunnel to optagon.ai');
+
+// optagon tunnel setup - Initial tunnel configuration
+tunnel
+  .command('setup')
+  .description('Configure tunnel connection to optagon.ai')
+  .option('-n, --name <name>', 'Server name', 'home-server')
+  .option('-u, --url <url>', 'Relay URL', 'wss://optagon.ai/tunnel')
+  .action(async (options: { name: string; url: string }) => {
+    try {
+      let config = loadTunnelConfig();
+
+      if (config) {
+        console.log(chalk.yellow('Tunnel already configured.'));
+        console.log(`  Server ID: ${chalk.cyan(config.serverId || 'not registered')}`);
+        console.log(`  Server Name: ${chalk.cyan(config.serverName)}`);
+        console.log(`  Relay URL: ${chalk.cyan(config.relayUrl)}`);
+        if (config.publicKey) {
+          console.log(`  Public Key: ${chalk.dim(config.publicKey.slice(0, 20) + '...')}`);
+        }
+        console.log();
+        console.log(chalk.dim('To reconfigure, run: optagon tunnel reset'));
+        return;
+      }
+
+      console.log(chalk.blue('Generating keypair...'));
+
+      // Generate Ed25519 keypair
+      const keyPair = await crypto.subtle.generateKey(
+        { name: 'Ed25519' },
+        true, // extractable
+        ['sign', 'verify']
+      );
+
+      // Export keys to raw format
+      const publicKeyBuffer = await crypto.subtle.exportKey('raw', keyPair.publicKey);
+      const privateKeyBuffer = await crypto.subtle.exportKey('pkcs8', keyPair.privateKey);
+
+      const publicKey = Buffer.from(publicKeyBuffer).toString('base64');
+      const privateKey = Buffer.from(privateKeyBuffer).toString('base64');
+
+      config = {
+        serverName: options.name,
+        relayUrl: options.url,
+        enabled: false,
+        publicKey,
+        privateKey,
+      };
+
+      saveTunnelConfig(config);
+
+      console.log(chalk.green('Tunnel configured!'));
+      console.log(`  Server Name: ${chalk.cyan(config.serverName)}`);
+      console.log(`  Relay URL: ${chalk.cyan(config.relayUrl)}`);
+      console.log(`  Public Key: ${chalk.dim(publicKey.slice(0, 20) + '...')}`);
+      console.log();
+      console.log(chalk.cyan('Connect with: optagon tunnel connect'));
+      console.log();
+      console.log(chalk.dim('Note: In production, you\'ll need to register this server at optagon.ai'));
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
+      process.exit(1);
+    }
+  });
+
+// optagon tunnel connect - Connect to tunnel server
+tunnel
+  .command('connect')
+  .description('Connect to optagon.ai tunnel server')
+  .action(async () => {
+    try {
+      const config = loadTunnelConfig();
+
+      if (!config) {
+        console.error(chalk.red('Tunnel not configured.'));
+        console.log(chalk.cyan('Run: optagon tunnel setup'));
+        process.exit(1);
+      }
+
+      console.log(chalk.blue('Connecting to tunnel...'));
+
+      const client = createTunnelClient({
+        relayUrl: config.relayUrl,
+        serverId: config.serverId,
+        serverName: config.serverName,
+        onStatusChange: (status: TunnelStatus) => {
+          if (status === 'connected') {
+            console.log(chalk.green('Connected to tunnel!'));
+            console.log(`  Session: ${chalk.dim(client.getSessionId())}`);
+            console.log();
+            console.log(chalk.dim('Press Ctrl+C to disconnect.'));
+          } else if (status === 'disconnected') {
+            console.log(chalk.yellow('Disconnected from tunnel.'));
+          } else if (status === 'error') {
+            console.log(chalk.red('Tunnel error.'));
+          }
+        },
+      });
+
+      // Save server ID once connected
+      client.on('connected', (sessionId: string) => {
+        if (!config.serverId) {
+          config.serverId = client.getServerId();
+          config.enabled = true;
+          saveTunnelConfig(config);
+          console.log(chalk.dim(`Server ID saved: ${config.serverId}`));
+        }
+      });
+
+      await client.connect();
+
+      // Keep process alive
+      process.on('SIGINT', () => {
+        console.log(chalk.yellow('\nDisconnecting...'));
+        destroyTunnelClient();
+        process.exit(0);
+      });
+
+      // Prevent process from exiting
+      await new Promise(() => {});
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
+      process.exit(1);
+    }
+  });
+
+// optagon tunnel status - Show tunnel status
+tunnel
+  .command('status')
+  .description('Show tunnel configuration and status')
+  .action(() => {
+    try {
+      const config = loadTunnelConfig();
+
+      if (!config) {
+        console.log(chalk.yellow('Tunnel not configured.'));
+        console.log(chalk.cyan('Run: optagon tunnel setup'));
+        return;
+      }
+
+      console.log(chalk.bold('Tunnel Configuration'));
+      console.log(`  Server ID: ${chalk.cyan(config.serverId || 'not registered')}`);
+      console.log(`  Server Name: ${chalk.cyan(config.serverName)}`);
+      console.log(`  Relay URL: ${chalk.cyan(config.relayUrl)}`);
+      console.log(`  Enabled: ${config.enabled ? chalk.green('yes') : chalk.gray('no')}`);
+
+      const client = getTunnelClient();
+      if (client) {
+        console.log();
+        console.log(chalk.bold('Connection Status'));
+        const status = client.getStatus();
+        const statusColor = status === 'connected' ? chalk.green :
+                           status === 'connecting' ? chalk.yellow :
+                           status === 'error' ? chalk.red : chalk.gray;
+        console.log(`  Status: ${statusColor(status)}`);
+        if (client.getSessionId()) {
+          console.log(`  Session: ${chalk.dim(client.getSessionId())}`);
+        }
+      }
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
+      process.exit(1);
+    }
+  });
+
+// optagon tunnel disconnect - Disconnect from tunnel
+tunnel
+  .command('disconnect')
+  .description('Disconnect from tunnel server')
+  .action(() => {
+    try {
+      const client = getTunnelClient();
+      if (client) {
+        client.disconnect();
+        console.log(chalk.green('Disconnected from tunnel.'));
+      } else {
+        console.log(chalk.yellow('Not connected to tunnel.'));
+      }
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
+      process.exit(1);
+    }
+  });
+
+// optagon tunnel reset - Reset tunnel configuration
+tunnel
+  .command('reset')
+  .description('Reset tunnel configuration')
+  .action(() => {
+    try {
+      if (existsSync(TUNNEL_CONFIG_PATH)) {
+        const { unlinkSync } = require('fs');
+        unlinkSync(TUNNEL_CONFIG_PATH);
+        console.log(chalk.green('Tunnel configuration reset.'));
+      } else {
+        console.log(chalk.yellow('No tunnel configuration found.'));
+      }
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
+      process.exit(1);
+    }
+  });
 
 program.parse();
