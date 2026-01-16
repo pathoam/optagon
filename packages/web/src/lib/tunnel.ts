@@ -48,11 +48,12 @@ function createTunnel() {
     setState('connecting');
     setError(null);
 
-    const baseUrl = import.meta.env.VITE_TUNNEL_URL || 'wss://optagon.app';
-    const wsUrl = baseUrl.replace(/^http/, 'ws');
+    // Derive WebSocket URL from current origin (PWA is served from tunnel server)
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws`;
 
     console.log('[tunnel] Connecting to', wsUrl);
-    ws = new WebSocket(`${wsUrl}/ws`);
+    ws = new WebSocket(wsUrl);
 
     ws.onopen = async () => {
       console.log('[tunnel] WebSocket opened, authenticating...');

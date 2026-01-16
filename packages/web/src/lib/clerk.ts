@@ -4,11 +4,22 @@ import { createSignal } from 'solid-js';
 const [clerkInstance, setClerkInstance] = createSignal<Clerk | null>(null);
 const [signedIn, setSignedIn] = createSignal(false);
 
+// Fetch public config from server (runtime, not build-time)
+async function fetchConfig(): Promise<{ clerkPublishableKey: string | null }> {
+  const response = await fetch('/api/config');
+  if (!response.ok) {
+    throw new Error('Failed to fetch config');
+  }
+  return response.json();
+}
+
 export async function initClerk(): Promise<Clerk> {
-  const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+  // Fetch config from server at runtime
+  const config = await fetchConfig();
+  const publishableKey = config.clerkPublishableKey;
 
   if (!publishableKey) {
-    throw new Error('VITE_CLERK_PUBLISHABLE_KEY is not set');
+    throw new Error('Clerk publishable key not configured on server');
   }
 
   const clerk = new Clerk(publishableKey);

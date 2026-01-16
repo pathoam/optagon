@@ -1,5 +1,5 @@
 node_modules/
-dist/
+# dist/ - temporarily included for deployment
 .env
 .env.local
 *.log

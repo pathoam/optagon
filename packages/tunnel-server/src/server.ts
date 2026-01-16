@@ -134,6 +134,17 @@ export function startServer() {
         );
       }
 
+      // Public config endpoint - returns publishable keys for client-side use
+      if (url.pathname === '/api/config') {
+        return Response.json(
+          {
+            clerkPublishableKey: process.env.CLERK_PUBLISHABLE_KEY || null,
+            // Add other public config here as needed
+          },
+          { headers: corsHeaders }
+        );
+      }
+
       // Stats (for debugging)
       if (url.pathname === '/stats') {
         return Response.json(connections.getStats(), { headers: corsHeaders });
