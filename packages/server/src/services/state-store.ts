@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS frames (
     tmux_socket TEXT,
     graphiti_group_id TEXT NOT NULL,
     host_port INTEGER,
+    template_name TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     last_active_at INTEGER
@@ -103,8 +104,8 @@ export class StateStore {
     const now = Date.now();
 
     const insertFrame = this.db.prepare(`
-      INSERT INTO frames (id, name, description, status, workspace_path, container_id, tmux_socket, graphiti_group_id, host_port, created_at, updated_at, last_active_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO frames (id, name, description, status, workspace_path, container_id, tmux_socket, graphiti_group_id, host_port, template_name, created_at, updated_at, last_active_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const insertConfig = this.db.prepare(`
@@ -125,6 +126,7 @@ export class StateStore {
         frame.tmuxSocket ?? null,
         frame.graphitiGroupId,
         frame.hostPort ?? null,
+        frame.templateName ?? null,
         now,
         now,
         frame.lastActiveAt?.getTime() ?? null
@@ -204,6 +206,10 @@ export class StateStore {
     if (updates.description !== undefined) {
       setClauses.push('description = ?');
       values.push(updates.description);
+    }
+    if (updates.templateName !== undefined) {
+      setClauses.push('template_name = ?');
+      values.push(updates.templateName);
     }
 
     values.push(id);
@@ -298,6 +304,7 @@ export class StateStore {
       tmuxSocket: row.tmux_socket ?? undefined,
       graphitiGroupId: row.graphiti_group_id,
       hostPort: row.host_port ?? undefined,
+      templateName: row.template_name ?? undefined,
       createdAt: new Date(row.created_at),
       updatedAt: new Date(row.updated_at),
       lastActiveAt: row.last_active_at ? new Date(row.last_active_at) : undefined,

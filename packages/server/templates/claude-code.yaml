@@ -1,0 +1,12 @@
+# Claude Code Template
+# Shell plus one Claude Code agent
+
+description: Development frame with Claude Code agent
+
+windows:
+  - name: shell
+    command: zsh
+
+  - name: agent
+    command: claude
+    cwd: /workspace

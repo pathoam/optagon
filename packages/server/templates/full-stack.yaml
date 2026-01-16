@@ -1,0 +1,16 @@
+# Full Stack Template
+# Shell, agent, and services window for Tilt
+
+description: Full stack development with services
+
+windows:
+  - name: shell
+    command: zsh
+
+  - name: agent
+    command: claude
+    cwd: /workspace
+
+  - name: services
+    command: zsh
+    # User can run 'tilt up' or docker-compose here

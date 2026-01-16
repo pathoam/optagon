@@ -1,0 +1,24 @@
+# Dual Agent Template
+# Developer and reviewer pattern (future coordination)
+
+description: Two agents for dev/review workflow
+
+windows:
+  - name: shell
+    command: zsh
+
+  - name: developer
+    role: developer
+    command: claude
+    cwd: /workspace
+    briefing: |
+      You are the developer for this project.
+      Implement features and fix bugs as directed.
+
+  - name: reviewer
+    role: reviewer
+    command: claude
+    cwd: /workspace
+    briefing: |
+      You are the code reviewer.
+      Review changes for quality and correctness.

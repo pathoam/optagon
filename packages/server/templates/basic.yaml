@@ -1,0 +1,8 @@
+# Basic Template
+# A simple shell-only frame for manual work
+
+description: Basic frame with interactive shell
+
+windows:
+  - name: shell
+    command: zsh

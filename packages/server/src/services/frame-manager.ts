@@ -14,8 +14,10 @@ const FRAMES_DIR = join(OPTAGON_DIR, 'frames');
 export class FrameManager {
   /**
    * Create a new frame
+   * @param input - Frame creation input
+   * @param templateName - Optional template name to apply on start
    */
-  async createFrame(input: CreateFrameInput): Promise<Frame> {
+  async createFrame(input: CreateFrameInput, templateName?: string): Promise<Frame> {
     const store = getStateStore();
     const portAllocator = getPortAllocator();
 
@@ -50,6 +52,7 @@ export class FrameManager {
       workspacePath: input.workspacePath,
       graphitiGroupId,
       hostPort,
+      templateName,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -61,6 +64,7 @@ export class FrameManager {
     store.addFrameEvent(id, 'created', {
       workspacePath: input.workspacePath,
       hostPort,
+      templateName,
     });
 
     return savedFrame;

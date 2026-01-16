@@ -1,0 +1,12 @@
+# OpenCode Template
+# Uses OpenCode instead of Claude Code
+
+description: Development frame with OpenCode agent
+
+windows:
+  - name: shell
+    command: zsh
+
+  - name: agent
+    command: opencode
+    cwd: /workspace

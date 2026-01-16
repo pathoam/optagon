@@ -19,6 +19,7 @@ export interface Frame {
   tmuxSocket?: string;
   graphitiGroupId: string;
   hostPort?: number;
+  templateName?: string; // Template used to create this frame
   createdAt: Date;
   updatedAt: Date;
   lastActiveAt?: Date;
@@ -82,3 +83,6 @@ export interface ContainerInfo {
 // Port allocation
 export const PORT_RANGE_START = 33000;
 export const PORT_RANGE_END = 34000;
+
+// Template types
+export * from './template';

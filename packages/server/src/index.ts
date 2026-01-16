@@ -9,6 +9,8 @@ import { getFrameManager } from './services/frame-manager.js';
 import { getContainerRuntime } from './services/container-runtime.js';
 import { getPortAllocator } from './services/port-allocator.js';
 import { getConfigManager } from './services/config-manager.js';
+import { getTemplateLoader } from './services/template-loader.js';
+import { getFrameInitializer } from './services/frame-initializer.js';
 import { createTunnelClient, getTunnelClient, destroyTunnelClient, type TunnelStatus } from './tunnel/index.js';
 import type { FrameStatus } from './types/index.js';
 
@@ -54,7 +56,8 @@ program
   .command('init [name]')
   .description('Initialize a frame for the current directory')
   .option('-d, --description <text>', 'Frame description')
-  .action(async (name: string | undefined, options: { description?: string }) => {
+  .option('-t, --template <name>', 'Template to use (run "optagon template list" to see options)')
+  .action(async (name: string | undefined, options: { description?: string; template?: string }) => {
     try {
       const cwd = resolve(process.cwd());
       const frameName = name || basename(cwd);
@@ -67,17 +70,31 @@ program
         return;
       }
 
+      // Validate template if specified
+      if (options.template) {
+        const loader = getTemplateLoader();
+        const hasTemplate = await loader.hasTemplate(options.template);
+        if (!hasTemplate) {
+          console.error(chalk.red(`Template not found: ${options.template}`));
+          console.log(chalk.cyan('Run "optagon template list" to see available templates.'));
+          process.exit(1);
+        }
+      }
+
       const manager = getFrameManager();
       const frame = await manager.createFrame({
         name: frameName,
         workspacePath: cwd,
         description: options.description,
-      });
+      }, options.template);
 
       console.log(chalk.green(`Frame '${frame.name}' initialized!`));
       console.log();
       console.log(`  Workspace: ${frame.workspacePath}`);
       console.log(`  Port: ${frame.hostPort}`);
+      if (frame.templateName) {
+        console.log(`  Template: ${frame.templateName}`);
+      }
       console.log();
       console.log(chalk.cyan('Start with: optagon start'));
     } catch (error) {
@@ -125,8 +142,24 @@ program
       }
 
       console.log(chalk.blue(`Starting frame '${frameName}'...`));
-      await manager.startFrame(frameName);
+      const startedFrame = await manager.startFrame(frameName);
       console.log(chalk.green('Frame started!'));
+
+      // Apply template if configured
+      if (startedFrame.templateName) {
+        console.log(chalk.blue(`Applying template '${startedFrame.templateName}'...`));
+        const initializer = getFrameInitializer();
+        const initStatus = await initializer.initializeFrame(startedFrame, startedFrame.templateName);
+
+        if (initStatus.errors.length > 0) {
+          console.log(chalk.yellow('Template applied with warnings:'));
+          for (const error of initStatus.errors) {
+            console.log(chalk.yellow(`  - ${error}`));
+          }
+        } else {
+          console.log(chalk.green(`Template applied! Created ${initStatus.windows.length} windows.`));
+        }
+      }
 
       if (options.attach) {
         console.log(chalk.blue('Attaching to tmux session...'));
@@ -427,14 +460,26 @@ frame
   .description('Create a new frame')
   .requiredOption('-w, --workspace <path>', 'Path to workspace directory')
   .option('-d, --description <text>', 'Frame description')
-  .action(async (name: string, options: { workspace: string; description?: string }) => {
+  .option('-t, --template <name>', 'Template to use (run "optagon template list" to see options)')
+  .action(async (name: string, options: { workspace: string; description?: string; template?: string }) => {
     try {
+      // Validate template if specified
+      if (options.template) {
+        const loader = getTemplateLoader();
+        const hasTemplate = await loader.hasTemplate(options.template);
+        if (!hasTemplate) {
+          console.error(chalk.red(`Template not found: ${options.template}`));
+          console.log(chalk.cyan('Run "optagon template list" to see available templates.'));
+          process.exit(1);
+        }
+      }
+
       const manager = getFrameManager();
       const frame = await manager.createFrame({
         name,
         workspacePath: options.workspace,
         description: options.description,
-      });
+      }, options.template);
 
       console.log(chalk.green('Frame created successfully!'));
       console.log();
@@ -642,6 +687,109 @@ frame
     }
   });
 
+// ===================
+// TEMPLATE COMMANDS
+// ===================
+
+const template = program.command('template').description('Manage frame templates');
+
+// List templates
+template
+  .command('list')
+  .alias('ls')
+  .description('List available templates')
+  .action(async () => {
+    try {
+      const loader = getTemplateLoader();
+      const templates = await loader.listTemplates();
+      const dirs = loader.getTemplateDirectories();
+
+      if (templates.length === 0) {
+        console.log(chalk.yellow('No templates found.'));
+        console.log();
+        console.log('Template directories:');
+        console.log(`  Built-in: ${chalk.dim(dirs.builtin)}`);
+        console.log(`  User: ${chalk.dim(dirs.user)}`);
+        return;
+      }
+
+      console.log(chalk.bold('Available Templates:'));
+      console.log();
+
+      for (const tmpl of templates) {
+        console.log(`  ${chalk.cyan(tmpl.name)}`);
+        if (tmpl.description) {
+          console.log(`    ${chalk.dim(tmpl.description)}`);
+        }
+        console.log(`    ${chalk.dim(`${tmpl.windows.length} window(s): ${tmpl.windows.map(w => w.name).join(', ')}`)}`);
+        console.log();
+      }
+
+      console.log(chalk.dim('Use with: optagon init --template <name>'));
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
+      process.exit(1);
+    }
+  });
+
+// Show template details
+template
+  .command('show <name>')
+  .description('Show template details')
+  .action(async (name: string) => {
+    try {
+      const loader = getTemplateLoader();
+      const tmpl = await loader.getResolvedTemplate(name);
+
+      if (!tmpl) {
+        console.error(chalk.red(`Template not found: ${name}`));
+        console.log(chalk.cyan('Run "optagon template list" to see available templates.'));
+        process.exit(1);
+      }
+
+      console.log(chalk.bold('Template:'), chalk.cyan(tmpl.name));
+      if (tmpl.description) {
+        console.log(chalk.dim(tmpl.description));
+      }
+      console.log();
+
+      if (tmpl.inheritanceChain && tmpl.inheritanceChain.length > 1) {
+        console.log(chalk.bold('Extends:'), tmpl.inheritanceChain.slice(1).join(' → '));
+        console.log();
+      }
+
+      console.log(chalk.bold('Windows:'));
+      for (const window of tmpl.windows) {
+        console.log();
+        console.log(`  ${chalk.cyan(window.name)}`);
+        console.log(`    Command: ${chalk.dim(window.command)}`);
+        if (window.cwd) {
+          console.log(`    Working Dir: ${chalk.dim(window.cwd)}`);
+        }
+        if (window.role) {
+          console.log(`    Role: ${chalk.dim(window.role)}`);
+        }
+        if (window.inject && window.inject.length > 0) {
+          console.log(`    Inject: ${chalk.dim(window.inject.length + ' line(s)')}`);
+        }
+        if (window.briefing) {
+          console.log(`    Briefing: ${chalk.dim('configured')}`);
+        }
+      }
+
+      if (tmpl.env && Object.keys(tmpl.env).length > 0) {
+        console.log();
+        console.log(chalk.bold('Environment:'));
+        for (const [key, value] of Object.entries(tmpl.env)) {
+          console.log(`  ${key}=${chalk.dim(value)}`);
+        }
+      }
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
+      process.exit(1);
+    }
+  });
+
 // Status command
 program
   .command('status')
@@ -680,6 +828,9 @@ function printFrame(frame: any) {
   console.log(`  Workspace: ${frame.workspacePath}`);
   if (frame.description) {
     console.log(`  Description: ${frame.description}`);
+  }
+  if (frame.templateName) {
+    console.log(`  Template: ${chalk.cyan(frame.templateName)}`);
   }
   console.log(`  Dev Server: ${frame.hostPort ? `http://localhost:${frame.hostPort}` : 'none'}`);
   if (tiltPort) {
