@@ -3,7 +3,9 @@ import type {
   RelayToPwaMessage,
   PwaToRelayMessage,
   FrameSummary,
+  DevServerSummary,
 } from './protocol';
+import { connectionConfig } from './connection-config';
 
 export type ConnectionState =
   | 'disconnected'
@@ -15,6 +17,7 @@ export type ConnectionState =
 function createTunnel() {
   const [state, setState] = createSignal<ConnectionState>('disconnected');
   const [frames, setFrames] = createSignal<FrameSummary[]>([]);
+  const [servers, setServers] = createSignal<DevServerSummary[]>([]);
   const [serverConnected, setServerConnected] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
 
@@ -48,9 +51,8 @@ function createTunnel() {
     setState('connecting');
     setError(null);
 
-    // Derive WebSocket URL from current origin (PWA is served from tunnel server)
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
+    // Get WebSocket URL from connection config
+    const wsUrl = connectionConfig.getWebSocketUrl();
 
     console.log('[tunnel] Connecting to', wsUrl);
     ws = new WebSocket(wsUrl);
@@ -115,6 +117,13 @@ function createTunnel() {
       case 'server_status':
         console.log('[tunnel] Server status:', msg.connected ? 'online' : 'offline');
         setServerConnected(msg.connected);
+        break;
+
+      case 'servers_sync':
+        console.log('[tunnel] Servers sync:', msg.servers.length, 'servers');
+        setServers(msg.servers);
+        // Update serverConnected based on whether any servers are connected
+        setServerConnected(msg.servers.some(s => s.connected));
         break;
 
       case 'frames_sync':
@@ -258,6 +267,7 @@ function createTunnel() {
   return {
     state,
     frames,
+    servers,
     serverConnected,
     error,
     connect,

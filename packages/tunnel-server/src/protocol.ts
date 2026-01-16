@@ -53,6 +53,21 @@ export interface PongMessage {
   ts: number;
 }
 
+// ============ Dev Servers ============
+
+export interface DevServerSummary {
+  serverId: string;
+  serverName: string;
+  connected: boolean;
+  frameCount: number;
+  connectedAt?: string;
+}
+
+export interface ServersSyncMessage {
+  type: 'servers_sync';
+  servers: DevServerSummary[];
+}
+
 // ============ Frames Sync ============
 
 export interface FramesSyncMessage {
@@ -169,6 +184,7 @@ export type RelayToPwaMessage =
   | { type: 'pwa_auth_success'; userId: string }
   | { type: 'pwa_auth_error'; message: string }
   | { type: 'server_status'; connected: boolean; serverId?: string }
+  | ServersSyncMessage
   | FramesSyncMessage
   | TerminalOpenedMessage
   | TerminalDataMessage

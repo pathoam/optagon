@@ -89,12 +89,23 @@ export type RelayToPwaMessage =
   | { type: 'pwa_auth_success'; userId: string }
   | { type: 'pwa_auth_error'; message: string }
   | { type: 'server_status'; connected: boolean; serverId?: string }
+  | { type: 'servers_sync'; servers: DevServerSummary[] }
   | { type: 'frames_sync'; frames: FrameSummary[] }
   | TerminalOpenedMessage
   | TerminalDataMessage
   | TerminalCloseMessage
   | TerminalErrorMessage
   | ApiResponseMessage;
+
+// ============ Dev Servers ============
+
+export interface DevServerSummary {
+  serverId: string;
+  serverName: string;
+  connected: boolean;
+  frameCount: number;
+  connectedAt?: string;
+}
 
 // ============ Helpers ============
 

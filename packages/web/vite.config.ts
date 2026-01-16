@@ -61,7 +61,32 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
+    port: 3000,        // Match container's exposed port
+    host: true,        // Bind to 0.0.0.0 for container access
+    proxy: {
+      // Proxy API requests to local tunnel-server (runs on 3001 in dev)
+      '/api': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+      // Proxy WebSocket connections to local tunnel-server
+      '/ws': {
+        target: 'ws://localhost:3001',
+        ws: true,
+      },
+      '/tunnel': {
+        target: 'ws://localhost:3001',
+        ws: true,
+      },
+      '/health': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+      '/stats': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+    },
   },
   build: {
     target: 'esnext',

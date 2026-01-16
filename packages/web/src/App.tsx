@@ -1,11 +1,11 @@
 import { createSignal, onMount, Show, Suspense } from 'solid-js';
-import { Route, Navigate, useNavigate } from '@solidjs/router';
+import { Navigate } from '@solidjs/router';
 import { initClerk, isSignedIn, clerk } from '~/lib/clerk';
 import { tunnel } from '~/lib/tunnel';
 import { Header } from '~/components/Header';
 import { FrameList } from '~/routes/index';
 import { FrameTerminal } from '~/routes/frame/[id]';
-import { SignIn } from '~/routes/sign-in';
+import { Auth } from '~/routes/auth';
 import { Settings } from '~/routes/settings';
 
 // Loading component
@@ -26,10 +26,10 @@ function ErrorDisplay(props: { message: string }) {
   );
 }
 
-// Protected wrapper that redirects to sign-in if not authenticated
+// Protected wrapper that redirects to auth if not authenticated
 function Protected(props: { children: any }) {
   return (
-    <Show when={isSignedIn()} fallback={<Navigate href="/sign-in" />}>
+    <Show when={isSignedIn()} fallback={<Navigate href="/auth" />}>
       {props.children}
     </Show>
   );
@@ -127,7 +127,20 @@ export const routes = [
     component: ProtectedSettings,
   },
   {
+    path: '/auth',
+    component: Auth,
+  },
+  {
+    path: '/auth/callback',
+    component: Auth, // OAuth callback returns here
+  },
+  // Redirects for old routes
+  {
     path: '/sign-in',
-    component: SignIn,
+    component: () => <Navigate href="/auth" />,
+  },
+  {
+    path: '/sign-up',
+    component: () => <Navigate href="/auth" />,
   },
 ];

@@ -480,6 +480,9 @@ async function handlePwaMessage(
           userId: user.userId,
         }));
 
+        // Send servers list to PWA
+        connections.sendServersSync(sessionId);
+
         // Connect to user's first online server
         const userServers = connections.getServersByUser(user.userId);
         if (userServers.length > 0) {
@@ -500,6 +503,9 @@ async function handlePwaMessage(
           type: 'pwa_auth_success',
           userId: msg.token,
         }));
+
+        // Send servers list to PWA
+        connections.sendServersSync(sessionId);
 
         // Connect to first available server
         const stats = connections.getStats();

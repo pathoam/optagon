@@ -8,6 +8,7 @@
 import type { ServerWebSocket } from 'bun';
 import type {
   FrameSummary,
+  DevServerSummary,
   RelayToClientMessage,
   RelayToPwaMessage,
 } from './protocol';
@@ -88,14 +89,35 @@ class ConnectionManager {
     // Notify connected PWA clients about server status
     this.notifyPwaClientsServerStatus(serverId, true);
 
+    // Auto-assign this server to PWA clients that don't have a target yet
+    this.autoAssignServerToPwaClients(serverId, userId);
+
     return sessionId;
   }
 
   /**
+   * Auto-assign a newly connected server to PWA clients without a target
+   */
+  private autoAssignServerToPwaClients(serverId: string, serverUserId?: string): void {
+    for (const [sessionId, pwa] of this.pwaClients) {
+      // Skip if already has a target
+      if (pwa.targetServerId) continue;
+
+      // In production, only assign to matching user's PWA
+      // If server has no userId (legacy), assign to anyone
+      if (!serverUserId || pwa.userId === serverUserId) {
+        console.log(`[connections] Auto-assigning server ${serverId} to PWA client ${pwa.userId}`);
+        this.setPwaTargetServer(sessionId, serverId);
+      }
+    }
+  }
+
+  /**
    * Get all servers for a specific user
+   * Also includes servers without userId (legacy/dev servers)
    */
   getServersByUser(userId: string): ServerConnection[] {
-    return Array.from(this.servers.values()).filter(s => s.userId === userId);
+    return Array.from(this.servers.values()).filter(s => !s.userId || s.userId === userId);
   }
 
   removeServer(sessionId: string): void {
@@ -249,6 +271,61 @@ class ConnectionManager {
       connected,
       serverId,
     });
+
+    // Also broadcast servers_sync to all PWA clients to update their server lists
+    this.broadcastServersSync();
+  }
+
+  /**
+   * Get servers list for a specific user as DevServerSummary[]
+   * Also includes servers without userId (legacy/dev servers visible to all)
+   */
+  getServersForUser(userId: string): DevServerSummary[] {
+    const allServers = Array.from(this.servers.values());
+
+    // Include servers that:
+    // 1. Belong to this user (s.userId === userId)
+    // 2. Have no userId set (legacy/dev servers - visible to everyone)
+    const filtered = allServers.filter(s => !s.userId || s.userId === userId);
+
+    return filtered.map(s => ({
+      serverId: s.serverId,
+      serverName: s.serverName,
+      connected: true,
+      frameCount: s.frames.length,
+      connectedAt: s.connectedAt.toISOString(),
+    }));
+  }
+
+  /**
+   * Send servers_sync to a specific PWA client
+   */
+  sendServersSync(sessionId: string): void {
+    const pwa = this.pwaClients.get(sessionId);
+    if (!pwa) {
+      console.log('[connections] sendServersSync: no PWA client for session', sessionId);
+      return;
+    }
+
+    const servers = this.getServersForUser(pwa.userId);
+    console.log(`[connections] sendServersSync to ${pwa.userId}: ${servers.length} servers`, servers.map(s => s.serverName));
+    this.sendToPwa(sessionId, {
+      type: 'servers_sync',
+      servers,
+    });
+  }
+
+  /**
+   * Broadcast servers_sync to all PWA clients
+   */
+  broadcastServersSync(): void {
+    for (const [sessionId, pwa] of this.pwaClients) {
+      const servers = this.getServersForUser(pwa.userId);
+      this.sendToPwa(sessionId, {
+        type: 'servers_sync',
+        servers,
+      });
+    }
   }
 
   // ============ Stats ============
