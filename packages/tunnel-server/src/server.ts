@@ -5,6 +5,7 @@
  * Uses Bun's native server for simplicity and performance.
  */
 
+import { join } from 'path';
 import { connections, type WebSocketData } from './connections';
 import {
   verifyClerkToken,
@@ -24,6 +25,69 @@ import type {
 } from './protocol';
 
 const PORT = parseInt(process.env.PORT || '3000');
+
+// Static file serving for PWA
+const STATIC_DIR = join(import.meta.dir, '../../web/dist');
+
+// MIME types for static files
+const MIME_TYPES: Record<string, string> = {
+  '.html': 'text/html',
+  '.js': 'application/javascript',
+  '.css': 'text/css',
+  '.json': 'application/json',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.webmanifest': 'application/manifest+json',
+};
+
+function getMimeType(path: string): string {
+  const ext = path.substring(path.lastIndexOf('.'));
+  return MIME_TYPES[ext] || 'application/octet-stream';
+}
+
+async function serveStatic(pathname: string): Promise<Response | null> {
+  try {
+    // Default to index.html for root or SPA routes
+    let filePath = pathname === '/' ? '/index.html' : pathname;
+
+    // Try to serve the file
+    let file = Bun.file(join(STATIC_DIR, filePath));
+
+    if (await file.exists()) {
+      return new Response(file, {
+        headers: {
+          'Content-Type': getMimeType(filePath),
+          'Cache-Control': filePath.includes('.') && !filePath.endsWith('.html')
+            ? 'public, max-age=31536000, immutable'
+            : 'no-cache',
+        },
+      });
+    }
+
+    // For SPA routing: if file doesn't exist and doesn't have extension, serve index.html
+    if (!filePath.includes('.') || filePath.endsWith('/')) {
+      file = Bun.file(join(STATIC_DIR, 'index.html'));
+      if (await file.exists()) {
+        return new Response(file, {
+          headers: {
+            'Content-Type': 'text/html',
+            'Cache-Control': 'no-cache',
+          },
+        });
+      }
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 // Track pending terminal channels: channelId -> { pwaSessionId, serverId }
 const terminalChannels = new Map<string, { pwaSessionId: string; serverId: string }>();
@@ -218,7 +282,12 @@ export function startServer() {
         return undefined;
       }
 
-      // TODO: Serve PWA static files in production
+      // Serve PWA static files
+      const staticResponse = await serveStatic(url.pathname);
+      if (staticResponse) {
+        return staticResponse;
+      }
+
       return new Response('Not found', { status: 404 });
     },
 
