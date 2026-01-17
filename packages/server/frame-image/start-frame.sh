@@ -35,11 +35,21 @@ if [ ! -L "/root/.local/state/opencode" ]; then
     ln -s "$AGENT_DATA/opencode/state" /root/.local/state/opencode
 fi
 
-# Claude Code persistence (if used)
+# Claude Code: credentials may be mounted read-only from host
+# Ensure .claude directory exists (credentials file may already be mounted inside)
+mkdir -p /root/.claude
+
+# Set up workspace persistence for other Claude data (history, projects, etc.)
 mkdir -p "$AGENT_DATA/claude"
-if [ ! -L "/root/.claude" ]; then
-    rm -rf /root/.claude 2>/dev/null
-    ln -s "$AGENT_DATA/claude" /root/.claude
+for subdir in projects cache debug shell-snapshots todos statsig; do
+    if [ ! -e "/root/.claude/$subdir" ]; then
+        mkdir -p "$AGENT_DATA/claude/$subdir"
+        ln -s "$AGENT_DATA/claude/$subdir" "/root/.claude/$subdir"
+    fi
+done
+
+if [ -f "/root/.claude/.credentials.json" ]; then
+    echo "Using host Claude Code credentials"
 fi
 
 # Start tmux session
