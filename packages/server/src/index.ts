@@ -651,25 +651,18 @@ db
   .action(async () => {
     try {
       console.log(chalk.cyan('Starting PostgreSQL...'));
-      const serverDir = join(homedir(), 'optagon', 'packages', 'server');
-      const composeFile = join(serverDir, 'compose.yaml');
+      const composeFile = findComposeFile();
 
-      if (!existsSync(composeFile)) {
-        // Try current directory
-        const localCompose = join(process.cwd(), 'compose.yaml');
-        if (existsSync(localCompose)) {
-          execSync(`podman-compose -f ${localCompose} up -d`, { stdio: 'inherit' });
-        } else {
-          console.error(chalk.red('compose.yaml not found.'));
-          console.error(chalk.yellow('Run this command from packages/server or install optagon globally.'));
-          process.exit(1);
-        }
-      } else {
-        execSync(`podman-compose -f ${composeFile} up -d`, { stdio: 'inherit' });
+      if (!composeFile) {
+        console.error(chalk.red('compose.yaml not found.'));
+        console.error(chalk.yellow('Run this command from packages/server or install optagon globally.'));
+        process.exit(1);
       }
 
+      execSync(`podman compose -f "${composeFile}" up -d`, { stdio: 'inherit' });
+
       console.log(chalk.green('PostgreSQL started.'));
-      console.log(chalk.dim('Connection: postgresql://optagon:optagon_dev@localhost:5432/optagon'));
+      console.log(chalk.dim('Connection: postgresql://optagon:optagon_dev@localhost:5434/optagon'));
     } catch (error) {
       console.error(chalk.red('Failed to start PostgreSQL:'), error instanceof Error ? error.message : error);
       process.exit(1);
@@ -782,8 +775,24 @@ frame
 
     console.log(chalk.blue('Starting frame...'));
     const frame = await manager.startFrame(name);
-
     console.log(chalk.green('Frame started!'));
+
+    // Apply template if configured
+    if (frame.templateName) {
+      console.log(chalk.blue(`Applying template '${frame.templateName}'...`));
+      const initializer = getFrameInitializer();
+      const initStatus = await initializer.initializeFrame(frame, frame.templateName);
+
+      if (initStatus.errors.length > 0) {
+        console.log(chalk.yellow('Template applied with warnings:'));
+        for (const error of initStatus.errors) {
+          console.log(chalk.yellow(`  - ${error}`));
+        }
+      } else {
+        console.log(chalk.green(`Template applied! Created ${initStatus.windows.length} windows.`));
+      }
+    }
+
     console.log();
     printFrame(frame);
     console.log();
