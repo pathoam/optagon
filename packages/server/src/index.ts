@@ -729,7 +729,8 @@ frame
   .requiredOption('-w, --workspace <path>', 'Path to workspace directory')
   .option('-d, --description <text>', 'Frame description')
   .option('-t, --template <name>', 'Template to use (run "optagon template list" to see options)')
-  .action(runCommand(async (name: string, options: { workspace: string; description?: string; template?: string }) => {
+  .option('-c, --config <json>', 'Frame config as JSON (manager, ports, behavior settings)')
+  .action(runCommand(async (name: string, options: { workspace: string; description?: string; template?: string; config?: string }) => {
     await ensureDatabase();
 
     // Validate template if specified
@@ -741,11 +742,22 @@ frame
       }
     }
 
+    // Parse config if provided
+    let config;
+    if (options.config) {
+      try {
+        config = JSON.parse(options.config);
+      } catch {
+        throw new Error('Invalid config JSON. Example: --config \'{"manager":{"provider":"anthropic","model":"claude-3"}}\'');
+      }
+    }
+
     const manager = getFrameManager();
     const frame = await manager.createFrame({
       name,
       workspacePath: options.workspace,
       description: options.description,
+      config,
     }, options.template);
 
     console.log(chalk.green('Frame created successfully!'));

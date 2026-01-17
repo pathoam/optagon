@@ -129,7 +129,7 @@ export class StateStore {
 
     await this.sql`
       INSERT INTO frame_configs (frame_id, config, updated_at)
-      VALUES (${frame.id}, ${JSON.stringify(config ?? {})}, ${now})
+      VALUES (${frame.id}, ${this.sql.json(config ?? {})}, ${now})
     `;
 
     return this.rowToFrame(insertedFrame);
@@ -213,9 +213,9 @@ export class StateStore {
     const now = new Date();
     await this.sql`
       INSERT INTO frame_configs (frame_id, config, updated_at)
-      VALUES (${frameId}, ${JSON.stringify(config)}, ${now})
+      VALUES (${frameId}, ${this.sql.json(config)}, ${now})
       ON CONFLICT (frame_id) DO UPDATE SET
-        config = ${JSON.stringify(config)},
+        config = ${this.sql.json(config)},
         updated_at = ${now}
     `;
   }
