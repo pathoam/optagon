@@ -444,7 +444,7 @@ program
       for (const frame of frames) {
         const statusColor = getStatusColor(frame.status);
         const indicator = frame.status === 'running' ? chalk.green('●') : chalk.dim('○');
-        const tiltPort = frame.hostPort ? frame.hostPort + 1000 : null;
+        const tiltPort = frame.hostPort ? frame.hostPort + 2000 : null;
 
         console.log(
           `  ${indicator} ${chalk.bold(frame.name)} ` +
@@ -1054,7 +1054,7 @@ program
 // Helper functions
 function printFrame(frame: any) {
   const statusColor = getStatusColor(frame.status);
-  const tiltPort = frame.hostPort ? frame.hostPort + 1000 : null;
+  const tiltPort = frame.hostPort ? frame.hostPort + 2000 : null;
 
   console.log(chalk.bold('Frame Details:'));
   console.log(`  Name: ${chalk.cyan(frame.name)}`);

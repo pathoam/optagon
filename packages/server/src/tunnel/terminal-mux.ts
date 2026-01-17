@@ -5,12 +5,34 @@
  * Each terminal channel is a separate PTY connected to a frame's tmux.
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { EventEmitter } from 'node:events';
 
 const FRAMES_DIR = join(homedir(), '.optagon', 'frames');
+
+/**
+ * Check if required host binaries are available
+ * Returns an array of missing binaries, or empty if all present
+ */
+function checkHostPrerequisites(): string[] {
+  const missing: string[] = [];
+
+  // Check for tmux
+  const tmuxCheck = spawnSync('which', ['tmux'], { encoding: 'utf-8' });
+  if (tmuxCheck.status !== 0) {
+    missing.push('tmux');
+  }
+
+  // Check for script (from util-linux/bsdutils)
+  const scriptCheck = spawnSync('which', ['script'], { encoding: 'utf-8' });
+  if (scriptCheck.status !== 0) {
+    missing.push('script');
+  }
+
+  return missing;
+}
 
 export interface TerminalSession {
   channelId: string;
@@ -45,6 +67,16 @@ export class TerminalMux extends EventEmitter {
     cols = 80,
     rows = 24
   ): Promise<TerminalSession> {
+    // Check host prerequisites
+    const missing = checkHostPrerequisites();
+    if (missing.length > 0) {
+      throw new Error(
+        `Missing required host binaries: ${missing.join(', ')}. ` +
+        `Install with: sudo apt install ${missing.includes('tmux') ? 'tmux ' : ''}` +
+        `${missing.includes('script') ? 'bsdutils' : ''}`.trim()
+      );
+    }
+
     // Build tmux socket path
     const tmuxSocket = join(FRAMES_DIR, frameId, 'tmux.sock');
 

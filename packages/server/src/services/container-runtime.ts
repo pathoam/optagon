@@ -8,25 +8,18 @@ const OPTAGON_DIR = join(homedir(), '.optagon');
 const FRAMES_DIR = join(OPTAGON_DIR, 'frames');
 const FRAME_IMAGE = 'optagon/frame:latest';
 
-// Get the podman socket path for rootless podman
-function getPodmanSocketPath(): string | null {
-  const uid = process.getuid?.() || 1000;
-  const socketPath = `/run/user/${uid}/podman/podman.sock`;
-  if (existsSync(socketPath)) {
-    return socketPath;
-  }
-  // Fallback for system podman
-  if (existsSync('/var/run/podman/podman.sock')) {
-    return '/var/run/podman/podman.sock';
-  }
-  return null;
-}
+// Docker socket paths
+const DOCKER_SOCKET_PATHS = [
+  '/var/run/docker.sock',
+  '/run/docker.sock',
+];
 
 export interface ContainerCreateOptions {
   name: string;
   workspacePath: string;
   hostPort: number;
   containerPort?: number;
+  additionalPorts?: number[];  // Additional container ports to expose
   frameId: string;
   env?: Record<string, string>;
 }
@@ -57,10 +50,37 @@ export class ContainerRuntime {
   }
 
   /**
+   * Get the container runtime socket path for mounting
+   * Handles both podman (rootless/root) and docker
+   */
+  private getContainerSocketPath(): string | null {
+    if (this.runtime === 'podman') {
+      // Try rootless podman socket first
+      const uid = process.getuid?.() || 1000;
+      const rootlessPath = `/run/user/${uid}/podman/podman.sock`;
+      if (existsSync(rootlessPath)) {
+        return rootlessPath;
+      }
+      // Fallback for system podman
+      if (existsSync('/var/run/podman/podman.sock')) {
+        return '/var/run/podman/podman.sock';
+      }
+    } else {
+      // Docker socket
+      for (const path of DOCKER_SOCKET_PATHS) {
+        if (existsSync(path)) {
+          return path;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
    * Create and start a container for a frame
    */
   async createContainer(options: ContainerCreateOptions): Promise<string> {
-    const { name, workspacePath, hostPort, containerPort = 3000, frameId, env = {} } = options;
+    const { name, workspacePath, hostPort, containerPort = 3000, additionalPorts = [], frameId, env = {} } = options;
     const containerName = `optagon-frame-${name}`;
     const tmuxSocketDir = join(FRAMES_DIR, frameId);
 
@@ -70,8 +90,12 @@ export class ContainerRuntime {
       throw new Error(`Failed to create tmux socket directory: ${tmuxSocketDir}`);
     }
 
-    // Tilt UI port = hostPort + 1000 (e.g., 33001 -> 34001)
-    const tiltPort = hostPort + 1000;
+    // Tilt UI port = hostPort + 2000 (e.g., 33001 -> 35001)
+    // Using +2000 offset to avoid collision with hostPort range (33000-34000)
+    const tiltPort = hostPort + 2000;
+
+    // SELinux :Z flag - only use for podman, can break Docker on some platforms
+    const selinuxFlag = this.runtime === 'podman' ? ':Z' : '';
 
     const args = [
       'run',
@@ -82,27 +106,37 @@ export class ContainerRuntime {
       // Port mapping: Tilt UI (10350)
       '-p', `127.0.0.1:${tiltPort}:10350`,
       // Mount workspace
-      '-v', `${workspacePath}:/workspace:Z`,
+      '-v', `${workspacePath}:/workspace${selinuxFlag}`,
       // Mount tmux socket directory
-      '-v', `${tmuxSocketDir}:/run/optagon:Z`,
+      '-v', `${tmuxSocketDir}:/run/optagon${selinuxFlag}`,
       // Environment variables
       '-e', `OPTAGON_FRAME_ID=${frameId}`,
       '-e', `OPTAGON_FRAME_NAME=${name}`,
       '-e', `OPTAGON_TILT_PORT=${tiltPort}`,
     ];
 
+    // Add additional port mappings (host port auto-allocated starting from hostPort+100)
+    for (let i = 0; i < additionalPorts.length; i++) {
+      const additionalHostPort = hostPort + 100 + i;
+      const additionalContainerPort = additionalPorts[i];
+      args.push('-p', `127.0.0.1:${additionalHostPort}:${additionalContainerPort}`);
+    }
+
     // Mount host's Claude Code credentials (read-only) for OAuth auth sharing
     const hostClaudeCredentials = join(homedir(), '.claude', '.credentials.json');
     if (existsSync(hostClaudeCredentials)) {
       // Ensure target directory exists in container, mount credentials read-only
-      args.push('-v', `${hostClaudeCredentials}:/root/.claude/.credentials.json:ro,Z`);
+      // SELinux flags are comma-separated from other mount options
+      const mountOpts = this.runtime === 'podman' ? ':ro,Z' : ':ro';
+      args.push('-v', `${hostClaudeCredentials}:/root/.claude/.credentials.json${mountOpts}`);
     }
 
-    // Mount podman/docker socket for container-in-container support
-    const podmanSocket = getPodmanSocketPath();
-    if (podmanSocket) {
+    // Mount container runtime socket for container-in-container support
+    const runtimeSocket = this.getContainerSocketPath();
+    if (runtimeSocket) {
       // Mount as /var/run/docker.sock for docker-compose compatibility
-      args.push('-v', `${podmanSocket}:/var/run/docker.sock:Z`);
+      const socketFlag = selinuxFlag ? selinuxFlag : '';
+      args.push('-v', `${runtimeSocket}:/var/run/docker.sock${socketFlag}`);
       args.push('-e', 'DOCKER_HOST=unix:///var/run/docker.sock');
     }
 
