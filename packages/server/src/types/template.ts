@@ -37,6 +37,12 @@ export interface WindowConfig {
 
   /** Timeout in ms to wait for readiness (default: 30000) */
   readyTimeout?: number;
+
+  /** Regex pattern to match in pane output to indicate readiness (alternative to idle detection) */
+  readyPattern?: string;
+
+  /** Command to run to check readiness; window is ready when command exits 0 */
+  readyCommand?: string;
 }
 
 /**

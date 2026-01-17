@@ -54,7 +54,18 @@ fi
 
 # Start tmux session
 tmux -S "$SOCKET_PATH" new-session -d -s "$SESSION_NAME" -c /workspace
-chmod 777 "$SOCKET_PATH"
+
+# Socket permissions: 770 allows owner (root) and group to access
+# The socket is mounted from host at ~/.optagon/frames/<id>/tmux.sock
+# Host processes (like the optagon CLI) access via this mounted path
+#
+# Security tradeoff:
+# - 777: Any host user can access the socket (less secure)
+# - 770: Only owner and group members can access (more secure)
+# - 700: Only owner can access (most secure, but may break host access)
+#
+# Using 770 as a balance - the host mount owner/group should match
+chmod 770 "$SOCKET_PATH"
 
 # Check for workspace-specific tmux setup
 if [ -f "/workspace/.optagon/tmux-setup.sh" ]; then

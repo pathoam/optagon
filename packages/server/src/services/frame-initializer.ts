@@ -89,22 +89,22 @@ class FrameInitializer {
           const fullPath = windowConfig.cwd.startsWith('/')
             ? windowConfig.cwd
             : `/workspace/${windowConfig.cwd}`;
-          await this.sendKeys(tmuxSocket, windowConfig.name, `cd ${fullPath}`);
-          await this.sendKeys(tmuxSocket, windowConfig.name, '', true); // Press Enter
+          await this.sendKeys(tmuxSocket, i, windowConfig.name, `cd ${fullPath}`);
+          await this.sendKeys(tmuxSocket, i, windowConfig.name, '', true); // Press Enter
         }
 
         // Set environment variables
         if (windowConfig.env) {
           for (const [key, value] of Object.entries(windowConfig.env)) {
-            await this.sendKeys(tmuxSocket, windowConfig.name, `export ${key}="${value}"`);
-            await this.sendKeys(tmuxSocket, windowConfig.name, '', true);
+            await this.sendKeys(tmuxSocket, i, windowConfig.name, `export ${key}="${value}"`);
+            await this.sendKeys(tmuxSocket, i, windowConfig.name, '', true);
           }
         }
 
         // Run the command
         if (windowConfig.command && windowConfig.command !== 'zsh') {
-          await this.sendKeys(tmuxSocket, windowConfig.name, windowConfig.command);
-          await this.sendKeys(tmuxSocket, windowConfig.name, '', true);
+          await this.sendKeys(tmuxSocket, i, windowConfig.name, windowConfig.command);
+          await this.sendKeys(tmuxSocket, i, windowConfig.name, '', true);
         }
 
         // Wait for readiness if we need to inject
@@ -115,8 +115,11 @@ class FrameInitializer {
           if (waitForReady) {
             const ready = await this.waitForWindowReady(
               tmuxSocket,
+              i,
               windowConfig.name,
-              timeout
+              timeout,
+              windowConfig.readyPattern,
+              windowConfig.readyCommand
             );
             if (!ready) {
               status.errors.push(`Window "${windowConfig.name}" not ready after ${timeout}ms`);
@@ -128,8 +131,8 @@ class FrameInitializer {
 
           // Inject startup text
           for (const line of windowConfig.inject) {
-            await this.sendKeys(tmuxSocket, windowConfig.name, line);
-            await this.sendKeys(tmuxSocket, windowConfig.name, '', true);
+            await this.sendKeys(tmuxSocket, i, windowConfig.name, line);
+            await this.sendKeys(tmuxSocket, i, windowConfig.name, '', true);
             await this.delay(100); // Small delay between injections
           }
         }
@@ -191,10 +194,12 @@ class FrameInitializer {
   }
 
   /**
-   * Send keys to a tmux window
+   * Send keys to a tmux window by index
+   * Using index avoids name collision issues while keeping names for logging
    */
-  private async sendKeys(socket: string, windowName: string, text: string, enter = false): Promise<void> {
-    const args = ['send-keys', '-t', `main:${windowName}`];
+  private async sendKeys(socket: string, windowIndex: number, windowName: string, text: string, enter = false): Promise<void> {
+    // Target by index to avoid name collision issues
+    const args = ['send-keys', '-t', `main:${windowIndex}`];
 
     if (text) {
       args.push(text);
@@ -233,33 +238,71 @@ class FrameInitializer {
   /**
    * Wait for a window to be ready (idle/waiting for input)
    *
-   * Current implementation: wait for window output to stabilize.
-   * Future: parse prompt patterns, detect TUI ready states.
+   * Supports three detection strategies:
+   * 1. readyPattern: regex pattern to match in pane output
+   * 2. readyCommand: command that exits 0 when ready
+   * 3. Default: wait for pane output to stabilize (idle detection)
    */
   private async waitForWindowReady(
     socket: string,
+    windowIndex: number,
     windowName: string,
-    timeout: number
+    timeout: number,
+    readyPattern?: string,
+    readyCommand?: string
   ): Promise<boolean> {
     const start = Date.now();
     let lastContent = '';
     let lastChangeTime = Date.now();
 
+    // Compile pattern once if provided
+    const pattern = readyPattern ? new RegExp(readyPattern) : null;
+
+    console.log(`[frame-init] Waiting for window "${windowName}" (index ${windowIndex}) to be ready...`);
+
     while (Date.now() - start < timeout) {
       try {
-        // Capture pane content
-        const content = await this.tmux(socket, [
-          'capture-pane',
-          '-t', `main:${windowName}`,
-          '-p', // Print to stdout
-        ]);
+        // Strategy 1: Pattern matching
+        if (pattern) {
+          const content = await this.tmux(socket, [
+            'capture-pane',
+            '-t', `main:${windowIndex}`,
+            '-p',
+          ]);
+          if (pattern.test(content)) {
+            console.log(`[frame-init] Window "${windowName}" ready (pattern matched)`);
+            return true;
+          }
+        }
+        // Strategy 2: Command probe
+        else if (readyCommand) {
+          // Run the ready command inside the container/window context
+          // Using tmux run-shell to execute in the same environment
+          const result = spawnSync('tmux', [
+            '-S', socket,
+            'run-shell', '-t', `main:${windowIndex}`,
+            readyCommand,
+          ], { timeout: 5000 });
+          if (result.status === 0) {
+            console.log(`[frame-init] Window "${windowName}" ready (command probe succeeded)`);
+            return true;
+          }
+        }
+        // Strategy 3: Idle detection (default)
+        else {
+          const content = await this.tmux(socket, [
+            'capture-pane',
+            '-t', `main:${windowIndex}`,
+            '-p',
+          ]);
 
-        if (content !== lastContent) {
-          lastContent = content;
-          lastChangeTime = Date.now();
-        } else if (Date.now() - lastChangeTime >= IDLE_THRESHOLD) {
-          // Content has been stable for IDLE_THRESHOLD ms
-          return true;
+          if (content !== lastContent) {
+            lastContent = content;
+            lastChangeTime = Date.now();
+          } else if (Date.now() - lastChangeTime >= IDLE_THRESHOLD) {
+            console.log(`[frame-init] Window "${windowName}" ready (idle threshold reached)`);
+            return true;
+          }
         }
       } catch {
         // Ignore errors during readiness check
@@ -269,6 +312,7 @@ class FrameInitializer {
     }
 
     // Timeout reached - consider ready anyway (best effort)
+    console.log(`[frame-init] Window "${windowName}" readiness timeout, proceeding anyway`);
     return true;
   }
 
@@ -305,12 +349,19 @@ class FrameInitializer {
 
   /**
    * Send text to a specific window (for external use)
+   * Resolves window name to index internally to avoid collision issues
    */
   async sendToWindow(frameId: string, windowName: string, text: string, pressEnter = false): Promise<boolean> {
     const socket = this.getTmuxSocket(frameId);
 
     try {
-      await this.sendKeys(socket, windowName, text, pressEnter);
+      // Resolve window name to index
+      const windowIndex = await this.resolveWindowIndex(socket, windowName);
+      if (windowIndex === null) {
+        console.error(`[frame-init] Window "${windowName}" not found`);
+        return false;
+      }
+      await this.sendKeys(socket, windowIndex, windowName, text, pressEnter);
       return true;
     } catch (error) {
       console.error(`[frame-init] Failed to send to window "${windowName}":`, error);
@@ -320,12 +371,17 @@ class FrameInitializer {
 
   /**
    * Select a window (make it active)
+   * Uses index internally for reliable targeting
    */
   async selectWindow(frameId: string, windowName: string): Promise<boolean> {
     const socket = this.getTmuxSocket(frameId);
 
     try {
-      await this.tmux(socket, ['select-window', '-t', `main:${windowName}`]);
+      const windowIndex = await this.resolveWindowIndex(socket, windowName);
+      if (windowIndex === null) {
+        return false;
+      }
+      await this.tmux(socket, ['select-window', '-t', `main:${windowIndex}`]);
       return true;
     } catch {
       return false;
@@ -334,14 +390,19 @@ class FrameInitializer {
 
   /**
    * Capture content from a window
+   * Uses index internally for reliable targeting
    */
   async captureWindow(frameId: string, windowName: string, lines = 100): Promise<string | null> {
     const socket = this.getTmuxSocket(frameId);
 
     try {
+      const windowIndex = await this.resolveWindowIndex(socket, windowName);
+      if (windowIndex === null) {
+        return null;
+      }
       const content = await this.tmux(socket, [
         'capture-pane',
-        '-t', `main:${windowName}`,
+        '-t', `main:${windowIndex}`,
         '-p',
         '-S', `-${lines}`, // Start from N lines back
       ]);
@@ -349,6 +410,30 @@ class FrameInitializer {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Resolve a window name to its index
+   * Returns null if window not found
+   */
+  private async resolveWindowIndex(socket: string, windowName: string): Promise<number | null> {
+    try {
+      const output = await this.tmux(socket, [
+        'list-windows',
+        '-t', 'main',
+        '-F', '#{window_index}:#{window_name}',
+      ]);
+
+      for (const line of output.trim().split('\n')) {
+        const [indexStr, name] = line.split(':');
+        if (name === windowName) {
+          return parseInt(indexStr, 10);
+        }
+      }
+    } catch {
+      // Fall through to return null
+    }
+    return null;
   }
 
   private delay(ms: number): Promise<void> {
