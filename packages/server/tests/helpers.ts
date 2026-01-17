@@ -14,6 +14,68 @@ import type { FrameConfig } from '../src/types/index.js';
 const CLI_PATH = join(import.meta.dir, '../src/index.ts');
 
 // ============================================
+// Preflight Check
+// ============================================
+
+export interface PreflightResult {
+  runtime: 'podman' | 'docker' | null;
+  hasImage: boolean;
+  missing: string[];
+  canRunIntegrationTests: boolean;
+}
+
+/**
+ * Run preflight checks for integration tests.
+ * Reports what's missing and whether tests can run.
+ * Call this once in beforeAll() to get diagnostic output.
+ */
+export function runPreflightChecks(): PreflightResult {
+  const missing: string[] = [];
+
+  // Check container runtime
+  const runtime = detectContainerRuntime();
+  if (!runtime) {
+    missing.push('Container runtime (podman or docker)');
+  }
+
+  // Check frame image (only if runtime available)
+  const hasImage = runtime ? imageExists(runtime) : false;
+  if (runtime && !hasImage) {
+    missing.push(`Frame image (build with: ${runtime} build -t optagon/frame:latest -f Dockerfile.frame .)`);
+  }
+
+  const canRunIntegrationTests = runtime !== null && hasImage;
+
+  return { runtime, hasImage, missing, canRunIntegrationTests };
+}
+
+/**
+ * Log preflight results to console.
+ * Use in beforeAll() to show what's available/missing.
+ */
+export function logPreflightResults(result: PreflightResult): void {
+  if (result.canRunIntegrationTests) {
+    console.log(`✓ Preflight passed: ${result.runtime} runtime, image available`);
+  } else {
+    console.log('⚠️  Integration tests will be skipped due to missing prerequisites:');
+    for (const item of result.missing) {
+      console.log(`   - ${item}`);
+    }
+  }
+}
+
+/**
+ * Get skip reason for tests that require container infrastructure.
+ * Returns null if tests can run, or a reason string if they should skip.
+ */
+export function getSkipReason(result: PreflightResult): string | null {
+  if (result.canRunIntegrationTests) {
+    return null;
+  }
+  return `Missing: ${result.missing.join(', ')}`;
+}
+
+// ============================================
 // Container Runtime Helpers
 // ============================================
 
@@ -34,12 +96,15 @@ export function detectContainerRuntime(): 'podman' | 'docker' | null {
   }
 }
 
+// Image name must match CLI build and container-runtime.ts
+const FRAME_IMAGE = 'optagon/frame:latest';
+
 /**
- * Check if optagon-frame image exists
+ * Check if optagon/frame image exists
  */
 export function imageExists(runtime: 'podman' | 'docker'): boolean {
   try {
-    execSync(`${runtime} image inspect optagon-frame:latest`, { stdio: 'ignore' });
+    execSync(`${runtime} image inspect ${FRAME_IMAGE}`, { stdio: 'ignore' });
     return true;
   } catch {
     return false;

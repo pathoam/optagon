@@ -20,8 +20,8 @@ import { existsSync, mkdirSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
-  detectContainerRuntime,
-  imageExists,
+  runPreflightChecks,
+  logPreflightResults,
   runCli,
   getContainerEnv,
   getContainerPorts,
@@ -29,37 +29,41 @@ import {
   isContainerRunning,
   waitForFrameStatus,
   cleanupTestFrames,
+  type PreflightResult,
 } from '../helpers.js';
 
 const TEST_PREFIX = 'int-test';
 const TEST_WORKSPACE = join(tmpdir(), `optagon-${TEST_PREFIX}-${Date.now()}`);
 
-let runtime: 'podman' | 'docker' | null = null;
-let hasImage = false;
+// Preflight check result - populated in beforeAll
+let preflight: PreflightResult;
+
+// Helper to conditionally run tests based on preflight
+const itRequiresInfra = (name: string, fn: () => Promise<void>, timeout?: number) => {
+  test(name, async () => {
+    if (!preflight.canRunIntegrationTests) {
+      console.log(`  ⏭️  Skipped: ${preflight.missing.join(', ')}`);
+      return;
+    }
+    await fn();
+  }, timeout);
+};
 
 describe('Frame Lifecycle Integration Tests', () => {
   beforeAll(() => {
-    runtime = detectContainerRuntime();
-    if (!runtime) {
-      console.log('⚠️  No container runtime (podman/docker) detected');
-      console.log('   Install podman or docker to run these tests');
-      return;
-    }
+    preflight = runPreflightChecks();
+    logPreflightResults(preflight);
 
-    hasImage = imageExists(runtime);
-    if (!hasImage) {
-      console.log('⚠️  optagon-frame:latest image not found');
-      console.log('   Build with: podman build -t optagon-frame:latest -f Dockerfile.frame .');
-      return;
+    if (preflight.canRunIntegrationTests) {
+      // Create test workspace
+      mkdirSync(TEST_WORKSPACE, { recursive: true });
+      console.log(`✓ Using workspace: ${TEST_WORKSPACE}`);
     }
-
-    // Create test workspace
-    mkdirSync(TEST_WORKSPACE, { recursive: true });
-    console.log(`✓ Using workspace: ${TEST_WORKSPACE}`);
-    console.log(`✓ Container runtime: ${runtime}`);
   });
 
   afterAll(async () => {
+    if (!preflight.canRunIntegrationTests) return;
+
     // Clean up all test frames
     await cleanupTestFrames(TEST_PREFIX);
 
@@ -70,10 +74,12 @@ describe('Frame Lifecycle Integration Tests', () => {
   });
 
   beforeEach(async () => {
+    if (!preflight.canRunIntegrationTests) return;
     await cleanupTestFrames(TEST_PREFIX);
   });
 
   afterEach(async () => {
+    if (!preflight.canRunIntegrationTests) return;
     await cleanupTestFrames(TEST_PREFIX);
   });
 
@@ -82,9 +88,7 @@ describe('Frame Lifecycle Integration Tests', () => {
   // ============================================
 
   describe('frame lifecycle', () => {
-    test('create frame', async () => {
-      if (!runtime || !hasImage) return;
-
+    itRequiresInfra('create frame', async () => {
       const frameName = `${TEST_PREFIX}-create-${Date.now()}`;
       const result = await runCli(['frame', 'create', frameName, '-w', TEST_WORKSPACE]);
 
@@ -94,9 +98,7 @@ describe('Frame Lifecycle Integration Tests', () => {
       expect(result.stdout).toContain('Status: created');
     });
 
-    test('start frame creates running container', async () => {
-      if (!runtime || !hasImage) return;
-
+    itRequiresInfra('start frame creates running container', async () => {
       const frameName = `${TEST_PREFIX}-start-${Date.now()}`;
 
       // Create
@@ -112,12 +114,10 @@ describe('Frame Lifecycle Integration Tests', () => {
 
       // Verify container is actually running
       const containerName = `optagon-frame-${frameName}`;
-      expect(isContainerRunning(runtime, containerName)).toBe(true);
+      expect(isContainerRunning(preflight.runtime!, containerName)).toBe(true);
     }, 90000);
 
-    test('stop frame stops container', async () => {
-      if (!runtime || !hasImage) return;
-
+    itRequiresInfra('stop frame stops container', async () => {
       const frameName = `${TEST_PREFIX}-stop-${Date.now()}`;
 
       // Create and start
@@ -135,12 +135,10 @@ describe('Frame Lifecycle Integration Tests', () => {
 
       // Verify container is not running
       const containerName = `optagon-frame-${frameName}`;
-      expect(isContainerRunning(runtime, containerName)).toBe(false);
+      expect(isContainerRunning(preflight.runtime!, containerName)).toBe(false);
     }, 120000);
 
-    test('destroy frame removes container', async () => {
-      if (!runtime || !hasImage) return;
-
+    itRequiresInfra('destroy frame removes container', async () => {
       const frameName = `${TEST_PREFIX}-destroy-${Date.now()}`;
       const containerName = `optagon-frame-${frameName}`;
 
@@ -162,16 +160,14 @@ describe('Frame Lifecycle Integration Tests', () => {
 
       // Verify container is removed
       try {
-        execSync(`${runtime} inspect ${containerName}`, { stdio: 'ignore' });
+        execSync(`${preflight.runtime} inspect ${containerName}`, { stdio: 'ignore' });
         expect(false).toBe(true); // Should not reach here
       } catch {
         // Expected - container should not exist
       }
     }, 150000);
 
-    test('force destroy removes running container', async () => {
-      if (!runtime || !hasImage) return;
-
+    itRequiresInfra('force destroy removes running container', async () => {
       const frameName = `${TEST_PREFIX}-force-${Date.now()}`;
 
       // Create and start (don't stop)
@@ -194,9 +190,7 @@ describe('Frame Lifecycle Integration Tests', () => {
   // ============================================
 
   describe('config application', () => {
-    test('manager config sets environment variables', async () => {
-      if (!runtime || !hasImage) return;
-
+    itRequiresInfra('manager config sets environment variables', async () => {
       const frameName = `${TEST_PREFIX}-config-${Date.now()}`;
       const containerName = `optagon-frame-${frameName}`;
 
@@ -216,15 +210,13 @@ describe('Frame Lifecycle Integration Tests', () => {
       await waitForFrameStatus(frameName, 'running', 30000);
 
       // Check real environment variables in container
-      const env = getContainerEnv(runtime, containerName);
+      const env = getContainerEnv(preflight.runtime!, containerName);
       expect(env.OPTAGON_MANAGER_PROVIDER).toBe('anthropic');
       expect(env.OPTAGON_MANAGER_MODEL).toBe('claude-3-opus');
       expect(env.OPTAGON_MANAGER_TEMPERATURE).toBe('0.7');
     }, 90000);
 
-    test('ports config maps container port', async () => {
-      if (!runtime || !hasImage) return;
-
+    itRequiresInfra('ports config maps container port', async () => {
       const frameName = `${TEST_PREFIX}-ports-${Date.now()}`;
       const containerName = `optagon-frame-${frameName}`;
 
@@ -240,7 +232,7 @@ describe('Frame Lifecycle Integration Tests', () => {
       await waitForFrameStatus(frameName, 'running', 30000);
 
       // Check real port mapping
-      const ports = getContainerPorts(runtime, containerName);
+      const ports = getContainerPorts(preflight.runtime!, containerName);
       expect(ports).toContain('8080');
     }, 90000);
   });
@@ -250,9 +242,7 @@ describe('Frame Lifecycle Integration Tests', () => {
   // ============================================
 
   describe('template application', () => {
-    test('basic template creates tmux windows', async () => {
-      if (!runtime || !hasImage) return;
-
+    itRequiresInfra('basic template creates tmux windows', async () => {
       const frameName = `${TEST_PREFIX}-template-${Date.now()}`;
       const containerName = `optagon-frame-${frameName}`;
 
@@ -267,16 +257,14 @@ describe('Frame Lifecycle Integration Tests', () => {
       await new Promise(r => setTimeout(r, 3000));
 
       // Check tmux windows exist
-      const windows = getTmuxWindows(runtime, containerName);
+      const windows = getTmuxWindows(preflight.runtime!, containerName);
       expect(windows.length).toBeGreaterThan(0);
 
       // Basic template should have 'shell' window
       expect(windows.some(w => w.includes('shell'))).toBe(true);
     }, 90000);
 
-    test('claude-code template creates agent window', async () => {
-      if (!runtime || !hasImage) return;
-
+    itRequiresInfra('claude-code template creates agent window', async () => {
       const frameName = `${TEST_PREFIX}-claude-${Date.now()}`;
       const containerName = `optagon-frame-${frameName}`;
 
@@ -291,16 +279,14 @@ describe('Frame Lifecycle Integration Tests', () => {
       await new Promise(r => setTimeout(r, 3000));
 
       // Check tmux windows
-      const windows = getTmuxWindows(runtime, containerName);
+      const windows = getTmuxWindows(preflight.runtime!, containerName);
       expect(windows.length).toBeGreaterThan(0);
 
       // Claude-code template should have agent window
       expect(windows.some(w => w.includes('agent'))).toBe(true);
     }, 90000);
 
-    test('full-stack template creates multiple windows', async () => {
-      if (!runtime || !hasImage) return;
-
+    itRequiresInfra('full-stack template creates multiple windows', async () => {
       const frameName = `${TEST_PREFIX}-fullstack-${Date.now()}`;
       const containerName = `optagon-frame-${frameName}`;
 
@@ -315,7 +301,7 @@ describe('Frame Lifecycle Integration Tests', () => {
       await new Promise(r => setTimeout(r, 4000));
 
       // Check tmux windows
-      const windows = getTmuxWindows(runtime, containerName);
+      const windows = getTmuxWindows(preflight.runtime!, containerName);
 
       // Full-stack should have multiple windows
       expect(windows.length).toBeGreaterThanOrEqual(2);
@@ -327,9 +313,7 @@ describe('Frame Lifecycle Integration Tests', () => {
   // ============================================
 
   describe('event tracking', () => {
-    test('events record full lifecycle', async () => {
-      if (!runtime || !hasImage) return;
-
+    itRequiresInfra('events record full lifecycle', async () => {
       const frameName = `${TEST_PREFIX}-events-${Date.now()}`;
 
       // Full lifecycle
@@ -353,17 +337,13 @@ describe('Frame Lifecycle Integration Tests', () => {
   // ============================================
 
   describe('error handling', () => {
-    test('start non-existent frame fails', async () => {
-      if (!runtime) return;
-
+    itRequiresInfra('start non-existent frame fails', async () => {
       const result = await runCli(['frame', 'start', 'non-existent-frame-xyz']);
       expect(result.exitCode).toBe(1);
       expect(result.stderr).toContain('not found');
     });
 
-    test('stop non-running frame fails', async () => {
-      if (!runtime || !hasImage) return;
-
+    itRequiresInfra('stop non-running frame fails', async () => {
       const frameName = `${TEST_PREFIX}-stopfail-${Date.now()}`;
       await runCli(['frame', 'create', frameName, '-w', TEST_WORKSPACE]);
 
@@ -372,9 +352,7 @@ describe('Frame Lifecycle Integration Tests', () => {
       expect(result.stderr).toContain('not running');
     });
 
-    test('destroy running frame without force fails', async () => {
-      if (!runtime || !hasImage) return;
-
+    itRequiresInfra('destroy running frame without force fails', async () => {
       const frameName = `${TEST_PREFIX}-destroyfail-${Date.now()}`;
 
       await runCli(['frame', 'create', frameName, '-w', TEST_WORKSPACE]);
@@ -386,6 +364,7 @@ describe('Frame Lifecycle Integration Tests', () => {
       expect(result.stderr).toContain('running');
     }, 90000);
 
+    // This test doesn't require container infrastructure
     test('create with non-existent workspace fails', async () => {
       const result = await runCli([
         'frame', 'create', 'test-frame',
@@ -401,9 +380,7 @@ describe('Frame Lifecycle Integration Tests', () => {
   // ============================================
 
   describe('workspace mounting', () => {
-    test('workspace is mounted in container', async () => {
-      if (!runtime || !hasImage) return;
-
+    itRequiresInfra('workspace is mounted in container', async () => {
       const frameName = `${TEST_PREFIX}-mount-${Date.now()}`;
       const containerName = `optagon-frame-${frameName}`;
 
@@ -419,7 +396,7 @@ describe('Frame Lifecycle Integration Tests', () => {
       // Check file exists in container
       try {
         const output = execSync(
-          `${runtime} exec ${containerName} cat /workspace/test-file.txt`,
+          `${preflight.runtime} exec ${containerName} cat /workspace/test-file.txt`,
           { encoding: 'utf-8' }
         );
         expect(output.trim()).toBe('test content');
