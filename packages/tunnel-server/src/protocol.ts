@@ -1,10 +1,21 @@
 /**
  * Tunnel Protocol Types
  *
+ * CANONICAL SOURCE - This is the authoritative definition of the protocol.
+ *
  * These types define the WebSocket message format between:
  * - Optagon servers (tunnel clients) running at user's home
  * - Tunnel relay server running at optagon.ai
  * - PWA clients connecting through the relay
+ *
+ * PROTOCOL DUPLICATION:
+ * Currently this file is duplicated in:
+ * - packages/server/src/tunnel/protocol.ts (subset for client)
+ * - packages/web/src/lib/protocol.ts (subset for PWA)
+ *
+ * TODO: Create @optagon/protocol shared package to eliminate duplication.
+ * When making protocol changes, update all three files until the shared
+ * package is created.
  */
 
 // ============ Connection Lifecycle ============

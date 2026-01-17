@@ -1,7 +1,12 @@
 /**
  * Protocol types for PWA ↔ Tunnel Server communication
  *
- * These match the types in packages/tunnel-server/src/protocol.ts
+ * DUPLICATED FROM: packages/tunnel-server/src/protocol.ts (canonical source)
+ *
+ * This contains the subset of protocol types needed by the PWA client.
+ * Keep in sync with the canonical source.
+ *
+ * TODO: Replace with import from @optagon/protocol shared package when created.
  */
 
 // ============ Frames ============

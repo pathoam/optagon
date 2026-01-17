@@ -1,8 +1,12 @@
 /**
- * Tunnel Protocol Types
+ * Tunnel Protocol Types (Client Subset)
  *
- * Shared protocol types for communication between optagon-server and tunnel-server.
- * This is a copy from @optagon/tunnel-server for now to avoid circular dependencies.
+ * DUPLICATED FROM: packages/tunnel-server/src/protocol.ts (canonical source)
+ *
+ * This contains the subset of protocol types needed by the optagon-server
+ * tunnel client. Keep in sync with the canonical source.
+ *
+ * TODO: Replace with import from @optagon/protocol shared package when created.
  */
 
 // ============ Connection Lifecycle ============

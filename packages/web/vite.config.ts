@@ -61,10 +61,27 @@ export default defineConfig({
     },
   },
   server: {
-    port: 3000,        // Match container's exposed port
+    port: 3000,        // PWA dev server port
     host: true,        // Bind to 0.0.0.0 for container access
+    /**
+     * Dev proxy configuration - forwards requests to tunnel-server
+     *
+     * DEV SETUP:
+     * 1. Start tunnel-server: cd packages/tunnel-server && bun run dev
+     *    - Listens on port 3001
+     *    - Serves /api/*, /ws, /tunnel, /health, /stats
+     *
+     * 2. Start PWA: cd packages/web && bun run dev
+     *    - Listens on port 3000
+     *    - Proxies backend routes to tunnel-server
+     *
+     * KEEP IN SYNC:
+     * - Proxy targets must match tunnel-server port (3001)
+     * - /api/config route is served by tunnel-server for runtime config
+     * - See connection-config.ts for WebSocket URL presets
+     */
     proxy: {
-      // Proxy API requests to local tunnel-server (runs on 3001 in dev)
+      // Proxy API requests to local tunnel-server
       '/api': {
         target: 'http://localhost:3001',
         changeOrigin: true,

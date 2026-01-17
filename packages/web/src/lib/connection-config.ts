@@ -9,10 +9,25 @@ export interface ConnectionConfig {
 
 const STORAGE_KEY = 'optagon:connection';
 
-// Default presets
+/**
+ * Connection presets for different environments
+ *
+ * DEV SETUP PAIRING:
+ * - tunnel-server: runs on port 3001 (bun run dev in packages/tunnel-server)
+ * - PWA dev server: runs on port 3000 (bun run dev in packages/web)
+ * - PWA proxies /ws and /api to tunnel-server via vite.config.ts
+ *
+ * When developing locally:
+ * 1. Start tunnel-server: cd packages/tunnel-server && bun run dev (port 3001)
+ * 2. Start PWA: cd packages/web && bun run dev (port 3000)
+ * 3. PWA "auto" mode uses current origin, proxy forwards to tunnel-server
+ * 4. Use "localhost" mode to bypass proxy and connect directly to tunnel-server
+ *
+ * Frame port mappings (33000-34000) are separate from tunnel-server port.
+ */
 export const CONNECTION_PRESETS = {
   production: 'wss://optagon.app/ws',
-  localhost: 'ws://localhost:33001/ws',  // Standard optagon port mapping (container:3001 -> host:33001)
+  localhost: 'ws://localhost:3001/ws',  // Direct connection to tunnel-server dev port
 } as const;
 
 function createConnectionConfig() {
