@@ -291,6 +291,7 @@ export class FrameManager {
   private async createFrameContainer(frame: Frame): Promise<{ containerId: string; hostPort: number }> {
     const containerRuntime = getContainerRuntime();
     const configManager = getConfigManager();
+    const store = getStateStore();
 
     // Check if a container with this name already exists (orphaned from DB reset, etc.)
     const existingContainer = await containerRuntime.getContainerByName(frame.name);
@@ -309,15 +310,57 @@ export class FrameManager {
       return { containerId: existingContainer.id, hostPort: actualHostPort };
     }
 
-    // No existing container, create a new one
+    // Get frame-specific config
+    const frameConfig = await store.getFrameConfig(frame.id);
+
+    // Start with global env from config manager
     const env = configManager.getContainerEnv();
 
+    // Apply manager config to environment variables
+    if (frameConfig?.manager) {
+      const { provider, model, temperature, apiKey, baseUrl } = frameConfig.manager;
+
+      // Set manager identification
+      env.OPTAGON_MANAGER_PROVIDER = provider;
+      env.OPTAGON_MANAGER_MODEL = model;
+
+      // Set temperature if provided
+      if (temperature !== undefined) {
+        env.OPTAGON_MANAGER_TEMPERATURE = String(temperature);
+      }
+
+      // Set provider-specific API key (frame config overrides global)
+      if (apiKey) {
+        switch (provider) {
+          case 'anthropic':
+            env.ANTHROPIC_API_KEY = apiKey;
+            break;
+          case 'openai':
+            env.OPENAI_API_KEY = apiKey;
+            break;
+          // ollama and vllm don't use API keys
+        }
+      }
+
+      // Set base URL for custom endpoints
+      if (baseUrl) {
+        env.OPTAGON_MANAGER_BASE_URL = baseUrl;
+      }
+    }
+
+    // Determine container port from config or use default
+    const containerPort = frameConfig?.ports?.dev;
+    const additionalPorts = frameConfig?.ports?.additional;
+
+    // Create the container with all config applied
     const containerId = await containerRuntime.createContainer({
       name: frame.name,
       workspacePath: frame.workspacePath,
       hostPort: frame.hostPort!,
+      containerPort,
       frameId: frame.id,
       env,
+      additionalPorts,
     });
 
     return { containerId, hostPort: frame.hostPort! };
@@ -332,4 +375,12 @@ export function getFrameManager(): FrameManager {
     frameManager = new FrameManager();
   }
   return frameManager;
+}
+
+/**
+ * Set the frame manager instance (for testing only)
+ * @internal
+ */
+export function _setFrameManager(manager: FrameManager | null): void {
+  frameManager = manager;
 }
