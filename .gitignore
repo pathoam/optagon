@@ -15,7 +15,9 @@ optagon-core/
 
 # Local state
 .agent/
+.agent-data/
 .claude/
+.optagon/
 
 # Runtime data
 *.db

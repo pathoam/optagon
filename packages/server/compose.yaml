@@ -1,0 +1,25 @@
+# Optagon Server - Development Services
+# Start with: podman-compose up -d
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: optagon-postgres
+    environment:
+      POSTGRES_DB: optagon
+      POSTGRES_USER: optagon
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-optagon_dev}
+    volumes:
+      - optagon-postgres-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5434:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U optagon -d optagon"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  optagon-postgres-data:
+    driver: local

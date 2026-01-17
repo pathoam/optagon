@@ -5,9 +5,9 @@ export class PortAllocator {
   /**
    * Allocate the next available port in the range 33000-34000
    */
-  allocate(): number {
+  async allocate(): Promise<number> {
     const store = getStateStore();
-    const usedPorts = new Set(store.getUsedPorts());
+    const usedPorts = new Set(await store.getUsedPorts());
 
     for (let port = PORT_RANGE_START; port <= PORT_RANGE_END; port++) {
       if (!usedPorts.has(port)) {
@@ -21,20 +21,20 @@ export class PortAllocator {
   /**
    * Check if a specific port is available
    */
-  isAvailable(port: number): boolean {
+  async isAvailable(port: number): Promise<boolean> {
     if (port < PORT_RANGE_START || port > PORT_RANGE_END) {
       return false;
     }
 
     const store = getStateStore();
-    const usedPorts = new Set(store.getUsedPorts());
+    const usedPorts = new Set(await store.getUsedPorts());
     return !usedPorts.has(port);
   }
 
   /**
    * Get all used ports
    */
-  getUsedPorts(): number[] {
+  async getUsedPorts(): Promise<number[]> {
     const store = getStateStore();
     return store.getUsedPorts();
   }
@@ -42,8 +42,8 @@ export class PortAllocator {
   /**
    * Get count of available ports
    */
-  getAvailableCount(): number {
-    const usedCount = this.getUsedPorts().length;
+  async getAvailableCount(): Promise<number> {
+    const usedCount = (await this.getUsedPorts()).length;
     return PORT_RANGE_END - PORT_RANGE_START + 1 - usedCount;
   }
 }

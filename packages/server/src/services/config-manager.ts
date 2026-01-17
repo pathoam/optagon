@@ -14,8 +14,12 @@ export interface OptagonConfig {
   anthropic_api_key?: string;
   openai_api_key?: string;
   default_model?: string;
+  database_url?: string;
   [key: string]: string | undefined;
 }
+
+// Default database URL for local development (port 5434 to avoid conflict with system postgres)
+export const DEFAULT_DATABASE_URL = 'postgresql://optagon:optagon_dev@localhost:5434/optagon';
 
 const CONFIG_DIR = join(homedir(), '.optagon');
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
@@ -87,6 +91,18 @@ class ConfigManager {
     }
 
     return env;
+  }
+
+  /**
+   * Get database connection URL
+   * Priority: config file > environment variable > default
+   */
+  getDatabaseUrl(): string {
+    return (
+      this.config.database_url ||
+      process.env.DATABASE_URL ||
+      DEFAULT_DATABASE_URL
+    );
   }
 }
 
