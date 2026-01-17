@@ -410,17 +410,39 @@ export class TunnelClient extends EventEmitter {
 
   // ============ API Handling ============
 
+  /**
+   * Handle API requests forwarded from the tunnel relay.
+   *
+   * SECURITY MODEL:
+   * - Requests only arrive here after PWA authentication at the relay
+   * - In production (Clerk enabled), relay verifies JWT before forwarding
+   * - In dev mode, any token is accepted - DO NOT expose to internet
+   *
+   * Currently only read-only endpoints are implemented.
+   * Write operations (POST/PUT/DELETE) are blocked until proper
+   * authorization is implemented (user → server ownership verification).
+   */
   private async handleApiRequest(msg: ApiRequestMessage): Promise<void> {
-    // TODO: Implement API routing
-    // For now, return a simple response
     const frameManager = getFrameManager();
+
+    // SECURITY: Block write operations until authorization is implemented
+    // The relay authenticates users but doesn't verify server ownership
+    if (msg.method !== 'GET') {
+      this.send({
+        type: 'api_response',
+        reqId: msg.reqId,
+        status: 403,
+        body: JSON.stringify({ error: 'Write operations not yet implemented' }),
+      });
+      return;
+    }
 
     try {
       let response: any;
 
-      if (msg.path === '/frames' && msg.method === 'GET') {
+      if (msg.path === '/frames') {
         response = await frameManager.listFrames();
-      } else if (msg.path.startsWith('/frames/') && msg.method === 'GET') {
+      } else if (msg.path.startsWith('/frames/')) {
         const frameId = msg.path.split('/')[2];
         response = await frameManager.getFrame(frameId);
         if (!response) {

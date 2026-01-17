@@ -14,6 +14,19 @@ const DOCKER_SOCKET_PATHS = [
   '/run/docker.sock',
 ];
 
+/**
+ * Container creation options
+ *
+ * SECURITY NOTE - Host mounts:
+ * 1. workspacePath → /workspace - User's project directory (required)
+ * 2. tmuxSocketDir → /run/optagon - Socket for terminal access (required)
+ * 3. ~/.claude/.credentials.json → read-only - OAuth credentials (optional, if exists)
+ * 4. Container runtime socket → /var/run/docker.sock - For docker-compose (optional)
+ *
+ * The container runtime socket mount enables docker/podman commands inside the
+ * container but grants significant privileges. Disable with disableContainerSocket
+ * if your workflow doesn't need container-in-container support.
+ */
 export interface ContainerCreateOptions {
   name: string;
   workspacePath: string;
@@ -22,6 +35,8 @@ export interface ContainerCreateOptions {
   additionalPorts?: number[];  // Additional container ports to expose
   frameId: string;
   env?: Record<string, string>;
+  /** Disable mounting the container runtime socket (more secure) */
+  disableContainerSocket?: boolean;
 }
 
 export class ContainerRuntime {
@@ -80,7 +95,7 @@ export class ContainerRuntime {
    * Create and start a container for a frame
    */
   async createContainer(options: ContainerCreateOptions): Promise<string> {
-    const { name, workspacePath, hostPort, containerPort = 3000, additionalPorts = [], frameId, env = {} } = options;
+    const { name, workspacePath, hostPort, containerPort = 3000, additionalPorts = [], frameId, env = {}, disableContainerSocket = false } = options;
     const containerName = `optagon-frame-${name}`;
     const tmuxSocketDir = join(FRAMES_DIR, frameId);
 
@@ -132,12 +147,16 @@ export class ContainerRuntime {
     }
 
     // Mount container runtime socket for container-in-container support
-    const runtimeSocket = this.getContainerSocketPath();
-    if (runtimeSocket) {
-      // Mount as /var/run/docker.sock for docker-compose compatibility
-      const socketFlag = selinuxFlag ? selinuxFlag : '';
-      args.push('-v', `${runtimeSocket}:/var/run/docker.sock${socketFlag}`);
-      args.push('-e', 'DOCKER_HOST=unix:///var/run/docker.sock');
+    // SECURITY: This grants significant privileges - container can spawn other containers
+    // Disable with disableContainerSocket option if not needed
+    if (!disableContainerSocket) {
+      const runtimeSocket = this.getContainerSocketPath();
+      if (runtimeSocket) {
+        // Mount as /var/run/docker.sock for docker-compose compatibility
+        const socketFlag = selinuxFlag ? selinuxFlag : '';
+        args.push('-v', `${runtimeSocket}:/var/run/docker.sock${socketFlag}`);
+        args.push('-e', 'DOCKER_HOST=unix:///var/run/docker.sock');
+      }
     }
 
     // Add custom environment variables (API keys, etc.)
