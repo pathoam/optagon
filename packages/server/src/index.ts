@@ -1184,14 +1184,111 @@ tunnel
       console.log(`  Relay URL: ${chalk.cyan(config.relayUrl)}`);
       console.log(`  Public Key: ${chalk.dim(publicKey.slice(0, 20) + '...')}`);
       console.log();
-      console.log(chalk.cyan('Connect with: optagon tunnel connect'));
-      console.log();
-      console.log(chalk.dim('Note: In production, you\'ll need to register this server at optagon.ai'));
+      console.log(chalk.cyan('Next step: Register your server with: optagon tunnel register'));
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
       process.exit(1);
     }
   });
+
+// optagon tunnel register - Register server with Clerk account
+tunnel
+  .command('register')
+  .description('Register this server with your optagon.ai account')
+  .option('-t, --token <token>', 'Clerk session token (for non-interactive use)')
+  .action(async (options: { token?: string }) => {
+    try {
+      const config = loadTunnelConfig();
+
+      if (!config) {
+        console.error(chalk.red('Tunnel not configured.'));
+        console.log(chalk.cyan('Run: optagon tunnel setup'));
+        process.exit(1);
+      }
+
+      if (!config.publicKey) {
+        console.error(chalk.red('No public key found in tunnel configuration.'));
+        console.log(chalk.cyan('Run: optagon tunnel reset && optagon tunnel setup'));
+        process.exit(1);
+      }
+
+      if (config.serverId) {
+        console.log(chalk.yellow('Server already registered.'));
+        console.log(`  Server ID: ${chalk.cyan(config.serverId)}`);
+        console.log();
+        console.log(chalk.dim('To re-register, run: optagon tunnel reset && optagon tunnel setup && optagon tunnel register'));
+        return;
+      }
+
+      // Get the relay URL base (strip /tunnel path and ws/wss protocol)
+      const relayUrl = config.relayUrl;
+      const httpUrl = relayUrl
+        .replace('wss://', 'https://')
+        .replace('ws://', 'http://')
+        .replace('/tunnel', '');
+
+      if (options.token) {
+        // Non-interactive mode with provided token
+        console.log(chalk.blue('Registering with provided token...'));
+        await registerWithToken(httpUrl, config, options.token);
+      } else {
+        // Interactive mode - display URL for user to get token
+        console.log(chalk.bold('Server Registration'));
+        console.log();
+        console.log('To register this server, you need to authenticate with optagon.ai.');
+        console.log();
+        console.log('1. Sign in at: ' + chalk.cyan(`${httpUrl}/register`));
+        console.log('2. Copy the session token shown after sign-in');
+        console.log('3. Run: ' + chalk.cyan(`optagon tunnel register --token <your-token>`));
+        console.log();
+        console.log(chalk.dim('Or use the PWA at ' + httpUrl + ' to manage your servers.'));
+      }
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
+      process.exit(1);
+    }
+  });
+
+async function registerWithToken(httpUrl: string, config: TunnelConfig, token: string): Promise<void> {
+  try {
+    const response = await fetch(`${httpUrl}/api/servers/register`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        serverName: config.serverName,
+        publicKey: config.publicKey,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Unknown error' }));
+      if (response.status === 401) {
+        throw new Error('Invalid or expired token. Please sign in again at optagon.ai');
+      } else if (response.status === 503) {
+        throw new Error('Authentication not configured on server. Contact admin.');
+      }
+      throw new Error(error.error || `Registration failed: ${response.status}`);
+    }
+
+    const data = await response.json() as { serverId: string; serverName: string };
+
+    // Save the server ID to config
+    config.serverId = data.serverId;
+    config.enabled = true;
+    saveTunnelConfig(config);
+
+    console.log(chalk.green('Server registered successfully!'));
+    console.log(`  Server ID: ${chalk.cyan(data.serverId)}`);
+    console.log(`  Server Name: ${chalk.cyan(data.serverName)}`);
+    console.log();
+    console.log(chalk.cyan('Connect with: optagon tunnel connect'));
+  } catch (error) {
+    throw error;
+  }
+}
 
 // optagon tunnel connect - Connect to tunnel server
 tunnel

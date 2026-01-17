@@ -48,6 +48,30 @@ class ConnectionManager {
   // Map sessionId -> serverId (for server connections)
   private sessionToServer = new Map<string, string>();
 
+  // Heartbeat interval for sending pings to all servers
+  private pingInterval: ReturnType<typeof setInterval> | null = null;
+
+  constructor() {
+    // Start heartbeat ping interval (every 30 seconds)
+    this.pingInterval = setInterval(() => {
+      this.sendPingToAllServers();
+    }, 30000);
+  }
+
+  /**
+   * Send ping to all connected servers
+   */
+  private sendPingToAllServers(): void {
+    const ts = Date.now();
+    for (const [serverId, connection] of this.servers) {
+      try {
+        connection.ws.send(JSON.stringify({ type: 'ping', ts }));
+      } catch {
+        // Ignore send errors (connection may be closing)
+      }
+    }
+  }
+
   // ============ Server Connections ============
 
   addServer(

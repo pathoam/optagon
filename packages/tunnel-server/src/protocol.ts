@@ -8,6 +8,27 @@
  */
 
 // ============ Connection Lifecycle ============
+//
+// AUTH MODE CONVERGENCE PLAN:
+// Currently two auth flows exist:
+//
+// 1. simple_auth (Phase 1 - development/testing):
+//    - Client sends serverId + serverName
+//    - Server accepts without verification
+//    - Used when Clerk is not configured
+//
+// 2. auth (Phase 2 - production with Clerk):
+//    - Client sends serverId + timestamp + signature
+//    - Server verifies signature against registered public key
+//    - Server associates connection with user who registered the key
+//
+// MIGRATION PATH:
+// - CLI: `tunnel setup` generates keypair, `tunnel register` binds it to Clerk account
+// - PWA: Signs in with Clerk, sees registered servers
+// - When Clerk is configured, simple_auth is rejected for registered servers
+// - Unregistered servers can still use simple_auth in dev mode
+//
+// Future: Remove simple_auth once all servers use proper registration
 
 export interface AuthMessage {
   type: 'auth';
@@ -28,7 +49,8 @@ export interface AuthErrorMessage {
   message: string;
 }
 
-// Simplified auth for Phase 1 (no Clerk yet)
+// Simplified auth for development/testing (no Clerk verification)
+// See AUTH MODE CONVERGENCE PLAN above
 export interface SimpleAuthMessage {
   type: 'simple_auth';
   serverId: string;

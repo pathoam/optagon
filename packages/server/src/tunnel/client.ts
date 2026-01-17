@@ -47,8 +47,6 @@ export class TunnelClient extends EventEmitter {
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 10;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-
-  private pingInterval: ReturnType<typeof setInterval> | null = null;
   private frameSyncInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(config: TunnelClientConfig) {
@@ -118,10 +116,6 @@ export class TunnelClient extends EventEmitter {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
-    }
-    if (this.pingInterval) {
-      clearInterval(this.pingInterval);
-      this.pingInterval = null;
     }
     if (this.frameSyncInterval) {
       clearInterval(this.frameSyncInterval);
@@ -243,10 +237,8 @@ export class TunnelClient extends EventEmitter {
     this.setStatus('connected');
     this.emit('connected', sessionId);
 
-    // Start ping interval
-    this.pingInterval = setInterval(() => {
-      this.send({ type: 'pong', ts: Date.now() });
-    }, 30000);
+    // Note: Heartbeat is server-initiated (server sends ping, client responds with pong)
+    // The client already handles 'ping' messages and responds with 'pong' in handleMessage()
 
     // Start frame sync
     this.syncFrames();
@@ -261,10 +253,6 @@ export class TunnelClient extends EventEmitter {
     this.sessionId = null;
 
     // Clear intervals
-    if (this.pingInterval) {
-      clearInterval(this.pingInterval);
-      this.pingInterval = null;
-    }
     if (this.frameSyncInterval) {
       clearInterval(this.frameSyncInterval);
       this.frameSyncInterval = null;
