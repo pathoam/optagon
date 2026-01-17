@@ -27,7 +27,7 @@ export class FrameManager {
     }
 
     // Check if frame name is unique
-    const existing = store.getFrameByName(input.name);
+    const existing = await store.getFrameByName(input.name);
     if (existing) {
       throw new Error(`Frame with name '${input.name}' already exists`);
     }
@@ -37,7 +37,7 @@ export class FrameManager {
     const graphitiGroupId = `frame:${id}`;
 
     // Allocate port
-    const hostPort = portAllocator.allocate();
+    const hostPort = await portAllocator.allocate();
 
     // Create frame directory
     const frameDir = join(FRAMES_DIR, id);
@@ -58,10 +58,10 @@ export class FrameManager {
     };
 
     // Save to database
-    const savedFrame = store.createFrame(frame, input.config);
+    const savedFrame = await store.createFrame(frame, input.config);
 
     // Log event
-    store.addFrameEvent(id, 'created', {
+    await store.addFrameEvent(id, 'created', {
       workspacePath: input.workspacePath,
       hostPort,
       templateName,
@@ -77,7 +77,7 @@ export class FrameManager {
     const store = getStateStore();
     const containerRuntime = getContainerRuntime();
 
-    const frame = this.resolveFrame(nameOrId);
+    const frame = await this.resolveFrame(nameOrId);
     if (!frame) {
       throw new Error(`Frame not found: ${nameOrId}`);
     }
@@ -87,7 +87,7 @@ export class FrameManager {
     }
 
     // Update status to starting
-    store.updateFrame(frame.id, { status: 'starting' });
+    await store.updateFrame(frame.id, { status: 'starting' });
 
     try {
       // Check if container already exists
@@ -97,30 +97,30 @@ export class FrameManager {
           // Just start existing container
           await containerRuntime.startContainer(frame.containerId);
         } else {
-          // Container was removed, create new one
-          const containerId = await this.createFrameContainer(frame);
-          store.updateFrame(frame.id, { containerId });
+          // Container was removed, create new one (or adopt existing)
+          const { containerId, hostPort } = await this.createFrameContainer(frame);
+          await store.updateFrame(frame.id, { containerId, hostPort });
         }
       } else {
-        // Create new container
-        const containerId = await this.createFrameContainer(frame);
-        store.updateFrame(frame.id, { containerId });
+        // Create new container (or adopt existing orphan)
+        const { containerId, hostPort } = await this.createFrameContainer(frame);
+        await store.updateFrame(frame.id, { containerId, hostPort });
       }
 
       // Update status to running
-      const updatedFrame = store.updateFrame(frame.id, {
+      const updatedFrame = await store.updateFrame(frame.id, {
         status: 'running',
         lastActiveAt: new Date(),
       });
 
       // Log event
-      store.addFrameEvent(frame.id, 'started');
+      await store.addFrameEvent(frame.id, 'started');
 
       return updatedFrame!;
     } catch (error) {
       // Update status to error
-      store.updateFrame(frame.id, { status: 'error' });
-      store.addFrameEvent(frame.id, 'error', {
+      await store.updateFrame(frame.id, { status: 'error' });
+      await store.addFrameEvent(frame.id, 'error', {
         message: error instanceof Error ? error.message : String(error),
       });
       throw error;
@@ -134,7 +134,7 @@ export class FrameManager {
     const store = getStateStore();
     const containerRuntime = getContainerRuntime();
 
-    const frame = this.resolveFrame(nameOrId);
+    const frame = await this.resolveFrame(nameOrId);
     if (!frame) {
       throw new Error(`Frame not found: ${nameOrId}`);
     }
@@ -144,7 +144,7 @@ export class FrameManager {
     }
 
     // Update status to stopping
-    store.updateFrame(frame.id, { status: 'stopping' });
+    await store.updateFrame(frame.id, { status: 'stopping' });
 
     try {
       if (frame.containerId) {
@@ -152,16 +152,16 @@ export class FrameManager {
       }
 
       // Update status to stopped
-      const updatedFrame = store.updateFrame(frame.id, { status: 'stopped' });
+      const updatedFrame = await store.updateFrame(frame.id, { status: 'stopped' });
 
       // Log event
-      store.addFrameEvent(frame.id, 'stopped');
+      await store.addFrameEvent(frame.id, 'stopped');
 
       return updatedFrame!;
     } catch (error) {
       // Update status to error
-      store.updateFrame(frame.id, { status: 'error' });
-      store.addFrameEvent(frame.id, 'error', {
+      await store.updateFrame(frame.id, { status: 'error' });
+      await store.addFrameEvent(frame.id, 'error', {
         message: error instanceof Error ? error.message : String(error),
       });
       throw error;
@@ -175,7 +175,7 @@ export class FrameManager {
     const store = getStateStore();
     const containerRuntime = getContainerRuntime();
 
-    const frame = this.resolveFrame(nameOrId);
+    const frame = await this.resolveFrame(nameOrId);
     if (!frame) {
       throw new Error(`Frame not found: ${nameOrId}`);
     }
@@ -195,23 +195,23 @@ export class FrameManager {
     }
 
     // Log event before deletion
-    store.addFrameEvent(frame.id, 'destroyed');
+    await store.addFrameEvent(frame.id, 'destroyed');
 
     // Delete from database
-    store.deleteFrame(frame.id);
+    await store.deleteFrame(frame.id);
   }
 
   /**
    * Get frame by name or ID
    */
-  getFrame(nameOrId: string): Frame | null {
+  async getFrame(nameOrId: string): Promise<Frame | null> {
     return this.resolveFrame(nameOrId);
   }
 
   /**
    * List all frames
    */
-  listFrames(status?: FrameStatus): Frame[] {
+  async listFrames(status?: FrameStatus): Promise<Frame[]> {
     const store = getStateStore();
     return store.listFrames(status);
   }
@@ -219,8 +219,8 @@ export class FrameManager {
   /**
    * Get frame config
    */
-  getFrameConfig(nameOrId: string): FrameConfig | null {
-    const frame = this.resolveFrame(nameOrId);
+  async getFrameConfig(nameOrId: string): Promise<FrameConfig | null> {
+    const frame = await this.resolveFrame(nameOrId);
     if (!frame) return null;
 
     const store = getStateStore();
@@ -230,22 +230,22 @@ export class FrameManager {
   /**
    * Update frame config
    */
-  updateFrameConfig(nameOrId: string, config: FrameConfig): void {
-    const frame = this.resolveFrame(nameOrId);
+  async updateFrameConfig(nameOrId: string, config: FrameConfig): Promise<void> {
+    const frame = await this.resolveFrame(nameOrId);
     if (!frame) {
       throw new Error(`Frame not found: ${nameOrId}`);
     }
 
     const store = getStateStore();
-    store.updateFrameConfig(frame.id, config);
-    store.addFrameEvent(frame.id, 'config_changed', { config });
+    await store.updateFrameConfig(frame.id, config);
+    await store.addFrameEvent(frame.id, 'config_changed', { config });
   }
 
   /**
    * Get tmux attach command for a frame
    */
-  getTmuxAttachCommand(nameOrId: string): string {
-    const frame = this.resolveFrame(nameOrId);
+  async getTmuxAttachCommand(nameOrId: string): Promise<string> {
+    const frame = await this.resolveFrame(nameOrId);
     if (!frame) {
       throw new Error(`Frame not found: ${nameOrId}`);
     }
@@ -257,8 +257,8 @@ export class FrameManager {
   /**
    * Get frame events
    */
-  getFrameEvents(nameOrId: string, limit = 50) {
-    const frame = this.resolveFrame(nameOrId);
+  async getFrameEvents(nameOrId: string, limit = 50) {
+    const frame = await this.resolveFrame(nameOrId);
     if (!frame) {
       throw new Error(`Frame not found: ${nameOrId}`);
     }
@@ -270,35 +270,57 @@ export class FrameManager {
   /**
    * Resolve frame by name or ID
    */
-  private resolveFrame(nameOrId: string): Frame | null {
+  private async resolveFrame(nameOrId: string): Promise<Frame | null> {
     const store = getStateStore();
 
-    // Try by ID first
-    let frame = store.getFrame(nameOrId);
-    if (frame) return frame;
+    // Only try by ID if it looks like a valid UUID
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (uuidRegex.test(nameOrId)) {
+      const frame = await store.getFrame(nameOrId);
+      if (frame) return frame;
+    }
 
     // Try by name
-    frame = store.getFrameByName(nameOrId);
-    return frame;
+    return store.getFrameByName(nameOrId);
   }
 
   /**
-   * Create container for a frame
+   * Create container for a frame, or adopt existing one with same name
+   * Returns { containerId, hostPort } - hostPort may differ from frame.hostPort if adopting
    */
-  private async createFrameContainer(frame: Frame): Promise<string> {
+  private async createFrameContainer(frame: Frame): Promise<{ containerId: string; hostPort: number }> {
     const containerRuntime = getContainerRuntime();
     const configManager = getConfigManager();
 
-    // Get API keys from config
+    // Check if a container with this name already exists (orphaned from DB reset, etc.)
+    const existingContainer = await containerRuntime.getContainerByName(frame.name);
+    if (existingContainer) {
+      console.log(`Adopting existing container for '${frame.name}'`);
+
+      // Start it if it's not running
+      if (existingContainer.status !== 'running') {
+        await containerRuntime.startContainer(existingContainer.id);
+      }
+
+      // Extract the actual host port from the container (port mapped to 3000)
+      const devPort = existingContainer.ports.find(p => p.container === 3000);
+      const actualHostPort = devPort?.host || frame.hostPort!;
+
+      return { containerId: existingContainer.id, hostPort: actualHostPort };
+    }
+
+    // No existing container, create a new one
     const env = configManager.getContainerEnv();
 
-    return containerRuntime.createContainer({
+    const containerId = await containerRuntime.createContainer({
       name: frame.name,
       workspacePath: frame.workspacePath,
       hostPort: frame.hostPort!,
       frameId: frame.id,
       env,
     });
+
+    return { containerId, hostPort: frame.hostPort! };
   }
 }
 

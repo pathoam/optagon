@@ -11,6 +11,7 @@ import { getPortAllocator } from './services/port-allocator.js';
 import { getConfigManager } from './services/config-manager.js';
 import { getTemplateLoader } from './services/template-loader.js';
 import { getFrameInitializer } from './services/frame-initializer.js';
+import { initializeStateStore, isDatabaseReady, closeStateStore } from './services/state-store.js';
 import { createTunnelClient, getTunnelClient, destroyTunnelClient, type TunnelStatus } from './tunnel/index.js';
 import type { FrameStatus } from './types/index.js';
 
@@ -22,10 +23,10 @@ program
   .version('0.1.0');
 
 // Helper: Find frame by current directory
-function findFrameByWorkspace(): string | null {
+async function findFrameByWorkspace(): Promise<string | null> {
   const cwd = resolve(process.cwd());
   const manager = getFrameManager();
-  const frames = manager.listFrames();
+  const frames = await manager.listFrames();
 
   for (const frame of frames) {
     if (resolve(frame.workspacePath) === cwd) {
@@ -36,15 +37,112 @@ function findFrameByWorkspace(): string | null {
 }
 
 // Helper: Resolve frame name (from arg or current directory)
-function resolveFrameName(name?: string): string {
+async function resolveFrameName(name?: string): Promise<string> {
   if (name) return name;
 
-  const found = findFrameByWorkspace();
+  const found = await findFrameByWorkspace();
   if (found) return found;
 
   console.error(chalk.red('No frame specified and current directory is not a frame workspace.'));
   console.error(chalk.yellow('Either specify a frame name or run from a workspace directory.'));
   process.exit(1);
+}
+
+// Helper: Ensure database is connected (auto-starts if needed)
+async function ensureDatabase(): Promise<void> {
+  // First, try to connect
+  const connected = await isDatabaseReady();
+  if (connected) {
+    await initializeStateStore();
+    return;
+  }
+
+  // Database not running - try to start it
+  console.log(chalk.dim('Starting database...'));
+
+  try {
+    // Check if container exists
+    const containerExists = await checkPostgresContainer();
+
+    if (containerExists) {
+      // Start existing container
+      execSync('podman start optagon-postgres 2>/dev/null', { stdio: 'pipe' });
+    } else {
+      // Create and start container using compose
+      const composeFile = findComposeFile();
+      if (composeFile) {
+        execSync(`podman compose -f "${composeFile}" up -d 2>/dev/null`, { stdio: 'pipe' });
+      } else {
+        // Fallback: create container directly
+        execSync(`podman run -d --name optagon-postgres \
+          -e POSTGRES_DB=optagon \
+          -e POSTGRES_USER=optagon \
+          -e POSTGRES_PASSWORD=optagon_dev \
+          -p 127.0.0.1:5434:5432 \
+          -v optagon-postgres-data:/var/lib/postgresql/data \
+          postgres:16-alpine 2>/dev/null`, { stdio: 'pipe' });
+      }
+    }
+
+    // Wait for PostgreSQL to be ready (up to 30 seconds)
+    const maxWait = 30;
+    for (let i = 0; i < maxWait; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      if (await isDatabaseReady()) {
+        await initializeStateStore();
+        return;
+      }
+    }
+
+    throw new Error('Database failed to start within 30 seconds');
+  } catch (error) {
+    console.error(chalk.red('Failed to start database automatically.'));
+    console.error(chalk.dim(error instanceof Error ? error.message : String(error)));
+    console.error(chalk.yellow('Try manually: podman compose up -d'));
+    process.exit(1);
+  }
+}
+
+// Check if postgres container exists (running or stopped)
+async function checkPostgresContainer(): Promise<boolean> {
+  try {
+    execSync('podman container exists optagon-postgres 2>/dev/null', { stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Find compose.yaml file
+function findComposeFile(): string | null {
+  // Try current directory first
+  const localCompose = join(process.cwd(), 'compose.yaml');
+  if (existsSync(localCompose)) return localCompose;
+
+  // Try the package directory
+  const pkgCompose = resolve(import.meta.dir, '../compose.yaml');
+  if (existsSync(pkgCompose)) return pkgCompose;
+
+  // Try standard install location
+  const homeCompose = join(homedir(), 'optagon', 'packages', 'server', 'compose.yaml');
+  if (existsSync(homeCompose)) return homeCompose;
+
+  return null;
+}
+
+// Command wrapper that handles cleanup and exit
+function runCommand(fn: (...args: any[]) => Promise<void>): (...args: any[]) => Promise<void> {
+  return async (...args: any[]) => {
+    try {
+      await fn(...args);
+      await closeStateStore();
+      process.exit(0);
+    } catch (error) {
+      console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
+      await closeStateStore();
+      process.exit(1);
+    }
+  };
 }
 
 // ===================
@@ -57,87 +155,96 @@ program
   .description('Initialize a frame for the current directory')
   .option('-d, --description <text>', 'Frame description')
   .option('-t, --template <name>', 'Template to use (run "optagon template list" to see options)')
-  .action(async (name: string | undefined, options: { description?: string; template?: string }) => {
-    try {
-      const cwd = resolve(process.cwd());
-      const frameName = name || basename(cwd);
+  .action(runCommand(async (name: string | undefined, options: { description?: string; template?: string }) => {
+    await ensureDatabase();
+    const cwd = resolve(process.cwd());
+    const frameName = name || basename(cwd);
 
-      // Check if frame already exists for this directory
-      const existing = findFrameByWorkspace();
-      if (existing) {
-        console.log(chalk.yellow(`Frame '${existing}' already exists for this directory.`));
-        console.log(chalk.cyan(`Use 'optagon start' to start it.`));
-        return;
-      }
-
-      // Validate template if specified
-      if (options.template) {
-        const loader = getTemplateLoader();
-        const hasTemplate = await loader.hasTemplate(options.template);
-        if (!hasTemplate) {
-          console.error(chalk.red(`Template not found: ${options.template}`));
-          console.log(chalk.cyan('Run "optagon template list" to see available templates.'));
-          process.exit(1);
-        }
-      }
-
-      const manager = getFrameManager();
-      const frame = await manager.createFrame({
-        name: frameName,
-        workspacePath: cwd,
-        description: options.description,
-      }, options.template);
-
-      console.log(chalk.green(`Frame '${frame.name}' initialized!`));
-      console.log();
-      console.log(`  Workspace: ${frame.workspacePath}`);
-      console.log(`  Port: ${frame.hostPort}`);
-      if (frame.templateName) {
-        console.log(`  Template: ${frame.templateName}`);
-      }
-      console.log();
-      console.log(chalk.cyan('Start with: optagon start'));
-    } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
-      process.exit(1);
+    // Check if frame already exists for this directory
+    const existing = await findFrameByWorkspace();
+    if (existing) {
+      console.log(chalk.yellow(`Frame '${existing}' already exists for this directory.`));
+      console.log(chalk.cyan(`Use 'optagon start' to start it.`));
+      return;
     }
-  });
+
+    // Validate template if specified
+    if (options.template) {
+      const loader = getTemplateLoader();
+      const hasTemplate = await loader.hasTemplate(options.template);
+      if (!hasTemplate) {
+        throw new Error(`Template not found: ${options.template}. Run "optagon template list" to see available templates.`);
+      }
+    }
+
+    const manager = getFrameManager();
+    const frame = await manager.createFrame({
+      name: frameName,
+      workspacePath: cwd,
+      description: options.description,
+    }, options.template);
+
+    console.log(chalk.green(`Frame '${frame.name}' initialized!`));
+    console.log();
+    console.log(`  Workspace: ${frame.workspacePath}`);
+    console.log(`  Port: ${frame.hostPort}`);
+    if (frame.templateName) {
+      console.log(`  Template: ${frame.templateName}`);
+    }
+    console.log();
+    console.log(chalk.cyan('Start with: optagon start'));
+  }));
 
 // optagon start [name] - Start frame and attach
 program
   .command('start [name]')
   .description('Start a frame (auto-detects from current directory)')
   .option('--no-attach', 'Start without attaching to tmux')
-  .action(async (name: string | undefined, options: { attach: boolean }) => {
+  .option('--fresh', 'Destroy and recreate container (loses container state)')
+  .action(async (name: string | undefined, options: { attach: boolean; fresh?: boolean }) => {
     try {
-      const frameName = resolveFrameName(name);
+      await ensureDatabase();
+      const frameName = await resolveFrameName(name);
       const manager = getFrameManager();
+      const runtime = getContainerRuntime();
 
       // Check current status
-      const frame = manager.getFrame(frameName);
+      const frame = await manager.getFrame(frameName);
       if (!frame) {
         console.error(chalk.red(`Frame not found: ${frameName}`));
         process.exit(1);
       }
 
-      if (frame.status === 'running') {
+      // Handle --fresh flag: destroy existing container first
+      if (options.fresh) {
+        const existingContainer = await runtime.getContainerByName(frame.name);
+        if (existingContainer) {
+          console.log(chalk.yellow(`Removing existing container for fresh start...`));
+          await runtime.removeContainer(existingContainer.id, true);
+        }
+        // Also clear the containerId from the frame record
+        const store = await import('./services/state-store.js').then(m => m.getStateStore());
+        await store.updateFrame(frame.id, { containerId: undefined });
+      }
+
+      if (frame.status === 'running' && !options.fresh) {
         console.log(chalk.yellow(`Frame '${frameName}' is already running.`));
         if (options.attach) {
           console.log(chalk.blue('Attaching...'));
-          const cmd = manager.getTmuxAttachCommand(frameName);
+          const cmd = await manager.getTmuxAttachCommand(frameName);
           execSync(cmd, { stdio: 'inherit' });
         }
-        return;
+        await closeStateStore();
+        process.exit(0);
       }
 
       // Check if image exists
-      const runtime = getContainerRuntime();
       const imageExists = await runtime.imageExists();
       if (!imageExists) {
         console.log(chalk.yellow('Frame image not found. Building...'));
         console.log(chalk.dim('This may take a few minutes on first run.'));
-        // Could auto-build here, but for now just error
         console.log(chalk.cyan('Run: cd ~/optagon/optagon-server && podman build -t optagon/frame:latest -f Dockerfile.frame .'));
+        await closeStateStore();
         process.exit(1);
       }
 
@@ -169,14 +276,19 @@ program
         // Small delay to let tmux start
         await new Promise(r => setTimeout(r, 500));
 
-        const cmd = manager.getTmuxAttachCommand(frameName);
+        await closeStateStore();
+        const cmd = await manager.getTmuxAttachCommand(frameName);
         execSync(cmd, { stdio: 'inherit' });
       } else {
         console.log();
         console.log(chalk.cyan('Attach with: optagon attach'));
       }
+
+      await closeStateStore();
+      process.exit(0);
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
+      await closeStateStore();
       process.exit(1);
     }
   });
@@ -185,12 +297,13 @@ program
 program
   .command('attach [name]')
   .description('Attach to a running frame')
-  .action((name: string | undefined) => {
+  .action(async (name: string | undefined) => {
     try {
-      const frameName = resolveFrameName(name);
+      await ensureDatabase();
+      const frameName = await resolveFrameName(name);
       const manager = getFrameManager();
 
-      const frame = manager.getFrame(frameName);
+      const frame = await manager.getFrame(frameName);
       if (!frame) {
         console.error(chalk.red(`Frame not found: ${frameName}`));
         process.exit(1);
@@ -203,7 +316,7 @@ program
       }
 
       console.log(chalk.dim('(Detach with Ctrl+b, then d)'));
-      const cmd = manager.getTmuxAttachCommand(frameName);
+      const cmd = await manager.getTmuxAttachCommand(frameName);
       execSync(cmd, { stdio: 'inherit' });
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
@@ -215,19 +328,15 @@ program
 program
   .command('stop [name]')
   .description('Stop a running frame')
-  .action(async (name: string | undefined) => {
-    try {
-      const frameName = resolveFrameName(name);
-      const manager = getFrameManager();
+  .action(runCommand(async (name: string | undefined) => {
+    await ensureDatabase();
+    const frameName = await resolveFrameName(name);
+    const manager = getFrameManager();
 
-      console.log(chalk.blue(`Stopping frame '${frameName}'...`));
-      await manager.stopFrame(frameName);
-      console.log(chalk.green('Frame stopped.'));
-    } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
-      process.exit(1);
-    }
-  });
+    console.log(chalk.blue(`Stopping frame '${frameName}'...`));
+    await manager.stopFrame(frameName);
+    console.log(chalk.green('Frame stopped.'));
+  }));
 
 // optagon restart [name] - Restart a frame
 program
@@ -237,10 +346,11 @@ program
   .option('--no-attach', 'Restart without attaching to tmux')
   .action(async (name: string | undefined, options: { purge?: boolean; attach: boolean }) => {
     try {
-      const frameName = resolveFrameName(name);
+      await ensureDatabase();
+      const frameName = await resolveFrameName(name);
       const manager = getFrameManager();
 
-      const frame = manager.getFrame(frameName);
+      const frame = await manager.getFrame(frameName);
       if (!frame) {
         console.error(chalk.red(`Frame not found: ${frameName}`));
         process.exit(1);
@@ -290,7 +400,7 @@ program
         console.log();
 
         await new Promise(r => setTimeout(r, 500));
-        const cmd = manager.getTmuxAttachCommand(frameName);
+        const cmd = await manager.getTmuxAttachCommand(frameName);
         execSync(cmd, { stdio: 'inherit' });
       }
     } catch (error) {
@@ -304,17 +414,30 @@ program
   .command('list')
   .alias('ls')
   .description('List all frames')
-  .action(() => {
-    try {
-      const manager = getFrameManager();
-      const frames = manager.listFrames();
+  .option('-a, --all', 'Also show orphaned containers (not in database)')
+  .action(runCommand(async (options: { all?: boolean }) => {
+    await ensureDatabase();
+    const manager = getFrameManager();
+    const runtime = getContainerRuntime();
+    const frames = await manager.listFrames();
 
-      if (frames.length === 0) {
-        console.log(chalk.yellow('No frames found.'));
-        console.log(chalk.cyan('Create one with: optagon init'));
-        return;
-      }
+    // Get all containers
+    const containers = await runtime.listContainers();
+    const frameNames = new Set(frames.map(f => f.name));
 
+    // Find orphaned containers (in podman but not in database)
+    const orphanedContainers = containers.filter(c => {
+      const frameName = c.name.replace('optagon-frame-', '');
+      return !frameNames.has(frameName);
+    });
+
+    if (frames.length === 0 && orphanedContainers.length === 0) {
+      console.log(chalk.yellow('No frames found.'));
+      console.log(chalk.cyan('Create one with: optagon init'));
+      return;
+    }
+
+    if (frames.length > 0) {
       console.log(chalk.bold('Frames:'));
       console.log();
 
@@ -334,11 +457,79 @@ program
           console.log(`    ${chalk.cyan(`http://localhost:${tiltPort}`)} ${chalk.dim('(tilt)')}`);
         }
       }
-    } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
-      process.exit(1);
     }
-  });
+
+    // Show orphaned containers
+    if (orphanedContainers.length > 0) {
+      if (options.all) {
+        console.log();
+        console.log(chalk.bold('Orphaned Containers:'));
+        console.log(chalk.dim('(containers without database entries - run "optagon cleanup" to remove)'));
+        console.log();
+        for (const container of orphanedContainers) {
+          const frameName = container.name.replace('optagon-frame-', '');
+          const statusColor = container.status === 'running' ? chalk.yellow : chalk.dim;
+          console.log(`  ${chalk.dim('○')} ${chalk.bold(frameName)} ${statusColor(`[${container.status}]`)} ${chalk.dim('(orphaned)')}`);
+        }
+      } else if (frames.length === 0) {
+        console.log(chalk.yellow(`Found ${orphanedContainers.length} orphaned container(s).`));
+        console.log(chalk.cyan('Run "optagon ls -a" to see them, or "optagon cleanup" to remove them.'));
+      } else {
+        console.log();
+        console.log(chalk.dim(`+ ${orphanedContainers.length} orphaned container(s). Run "optagon ls -a" to see all.`));
+      }
+    }
+  }));
+
+// optagon cleanup - Remove orphaned containers
+program
+  .command('cleanup')
+  .description('Remove orphaned containers (containers without database entries)')
+  .option('-f, --force', 'Remove without confirmation')
+  .action(runCommand(async (options: { force?: boolean }) => {
+    await ensureDatabase();
+    const manager = getFrameManager();
+    const runtime = getContainerRuntime();
+
+    const frames = await manager.listFrames();
+    const containers = await runtime.listContainers();
+    const frameNames = new Set(frames.map(f => f.name));
+
+    const orphanedContainers = containers.filter(c => {
+      const frameName = c.name.replace('optagon-frame-', '');
+      return !frameNames.has(frameName);
+    });
+
+    if (orphanedContainers.length === 0) {
+      console.log(chalk.green('No orphaned containers found.'));
+      return;
+    }
+
+    console.log(chalk.bold('Orphaned containers to remove:'));
+    for (const container of orphanedContainers) {
+      const frameName = container.name.replace('optagon-frame-', '');
+      console.log(`  - ${frameName} (${container.status})`);
+    }
+    console.log();
+
+    if (!options.force) {
+      console.log(chalk.yellow('Run with --force to remove these containers.'));
+      return;
+    }
+
+    console.log(chalk.blue('Removing orphaned containers...'));
+    for (const container of orphanedContainers) {
+      try {
+        await runtime.removeContainer(container.id, true);
+        const frameName = container.name.replace('optagon-frame-', '');
+        console.log(chalk.green(`  ✓ Removed ${frameName}`));
+      } catch (error) {
+        console.log(chalk.red(`  ✗ Failed to remove ${container.name}: ${error instanceof Error ? error.message : error}`));
+      }
+    }
+
+    console.log(chalk.green('Cleanup complete.'));
+  }));
 
 // optagon config - Manage configuration
 const config = program.command('config').description('Manage optagon configuration');
@@ -451,6 +642,83 @@ program
     }
   });
 
+// Database commands
+const db = program.command('db').description('Manage PostgreSQL database');
+
+db
+  .command('start')
+  .description('Start PostgreSQL container')
+  .action(async () => {
+    try {
+      console.log(chalk.cyan('Starting PostgreSQL...'));
+      const serverDir = join(homedir(), 'optagon', 'packages', 'server');
+      const composeFile = join(serverDir, 'compose.yaml');
+
+      if (!existsSync(composeFile)) {
+        // Try current directory
+        const localCompose = join(process.cwd(), 'compose.yaml');
+        if (existsSync(localCompose)) {
+          execSync(`podman-compose -f ${localCompose} up -d`, { stdio: 'inherit' });
+        } else {
+          console.error(chalk.red('compose.yaml not found.'));
+          console.error(chalk.yellow('Run this command from packages/server or install optagon globally.'));
+          process.exit(1);
+        }
+      } else {
+        execSync(`podman-compose -f ${composeFile} up -d`, { stdio: 'inherit' });
+      }
+
+      console.log(chalk.green('PostgreSQL started.'));
+      console.log(chalk.dim('Connection: postgresql://optagon:optagon_dev@localhost:5432/optagon'));
+    } catch (error) {
+      console.error(chalk.red('Failed to start PostgreSQL:'), error instanceof Error ? error.message : error);
+      process.exit(1);
+    }
+  });
+
+db
+  .command('stop')
+  .description('Stop PostgreSQL container')
+  .action(async () => {
+    try {
+      console.log(chalk.cyan('Stopping PostgreSQL...'));
+      execSync('podman stop optagon-postgres 2>/dev/null || true', { stdio: 'inherit' });
+      console.log(chalk.green('PostgreSQL stopped.'));
+    } catch (error) {
+      console.error(chalk.red('Failed to stop PostgreSQL:'), error instanceof Error ? error.message : error);
+      process.exit(1);
+    }
+  });
+
+db
+  .command('status')
+  .description('Check PostgreSQL connection status')
+  .action(runCommand(async () => {
+    const ready = await isDatabaseReady();
+    if (ready) {
+      console.log(chalk.green('✓ PostgreSQL is connected and ready.'));
+      const configManager = getConfigManager();
+      console.log(chalk.dim(`  URL: ${configManager.getDatabaseUrl()}`));
+    } else {
+      console.log(chalk.red('✗ PostgreSQL is not connected.'));
+      console.log(chalk.yellow('  Run: optagon db start'));
+    }
+  }));
+
+db
+  .command('logs')
+  .description('Show PostgreSQL container logs')
+  .option('-f, --follow', 'Follow log output')
+  .action(async (options: { follow?: boolean }) => {
+    try {
+      const followFlag = options.follow ? '-f' : '';
+      execSync(`podman logs ${followFlag} optagon-postgres`, { stdio: 'inherit' });
+    } catch (error) {
+      console.error(chalk.red('Failed to get logs:'), error instanceof Error ? error.message : error);
+      process.exit(1);
+    }
+  });
+
 // Frame commands
 const frame = program.command('frame').description('Manage development frames');
 
@@ -461,85 +729,70 @@ frame
   .requiredOption('-w, --workspace <path>', 'Path to workspace directory')
   .option('-d, --description <text>', 'Frame description')
   .option('-t, --template <name>', 'Template to use (run "optagon template list" to see options)')
-  .action(async (name: string, options: { workspace: string; description?: string; template?: string }) => {
-    try {
-      // Validate template if specified
-      if (options.template) {
-        const loader = getTemplateLoader();
-        const hasTemplate = await loader.hasTemplate(options.template);
-        if (!hasTemplate) {
-          console.error(chalk.red(`Template not found: ${options.template}`));
-          console.log(chalk.cyan('Run "optagon template list" to see available templates.'));
-          process.exit(1);
-        }
+  .action(runCommand(async (name: string, options: { workspace: string; description?: string; template?: string }) => {
+    await ensureDatabase();
+
+    // Validate template if specified
+    if (options.template) {
+      const loader = getTemplateLoader();
+      const hasTemplate = await loader.hasTemplate(options.template);
+      if (!hasTemplate) {
+        throw new Error(`Template not found: ${options.template}. Run "optagon template list" to see available templates.`);
       }
-
-      const manager = getFrameManager();
-      const frame = await manager.createFrame({
-        name,
-        workspacePath: options.workspace,
-        description: options.description,
-      }, options.template);
-
-      console.log(chalk.green('Frame created successfully!'));
-      console.log();
-      printFrame(frame);
-    } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
-      process.exit(1);
     }
-  });
+
+    const manager = getFrameManager();
+    const frame = await manager.createFrame({
+      name,
+      workspacePath: options.workspace,
+      description: options.description,
+    }, options.template);
+
+    console.log(chalk.green('Frame created successfully!'));
+    console.log();
+    printFrame(frame);
+  }));
 
 // Start frame
 frame
   .command('start <name>')
   .description('Start a frame')
-  .action(async (name: string) => {
-    try {
-      const manager = getFrameManager();
+  .action(runCommand(async (name: string) => {
+    await ensureDatabase();
+    const manager = getFrameManager();
 
-      // Check if image exists
-      const runtime = getContainerRuntime();
-      const imageExists = await runtime.imageExists();
-      if (!imageExists) {
-        console.log(chalk.yellow('Frame image not found. Please build it first:'));
-        console.log(chalk.cyan('  cd optagon-server && podman build -t optagon/frame:latest -f Dockerfile.frame .'));
-        process.exit(1);
-      }
-
-      console.log(chalk.blue('Starting frame...'));
-      const frame = await manager.startFrame(name);
-
-      console.log(chalk.green('Frame started!'));
-      console.log();
-      printFrame(frame);
-      console.log();
-      console.log(chalk.cyan('To attach to this frame:'));
-      console.log(`  ${manager.getTmuxAttachCommand(name)}`);
-    } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
-      process.exit(1);
+    // Check if image exists
+    const runtime = getContainerRuntime();
+    const imageExists = await runtime.imageExists();
+    if (!imageExists) {
+      throw new Error('Frame image not found. Build it with: cd optagon-server && podman build -t optagon/frame:latest -f Dockerfile.frame .');
     }
-  });
+
+    console.log(chalk.blue('Starting frame...'));
+    const frame = await manager.startFrame(name);
+
+    console.log(chalk.green('Frame started!'));
+    console.log();
+    printFrame(frame);
+    console.log();
+    console.log(chalk.cyan('To attach to this frame:'));
+    console.log(`  ${await manager.getTmuxAttachCommand(name)}`);
+  }));
 
 // Stop frame
 frame
   .command('stop <name>')
   .description('Stop a running frame')
-  .action(async (name: string) => {
-    try {
-      const manager = getFrameManager();
-      console.log(chalk.blue('Stopping frame...'));
-      const frame = await manager.stopFrame(name);
+  .action(runCommand(async (name: string) => {
+    await ensureDatabase();
+    const manager = getFrameManager();
+    console.log(chalk.blue('Stopping frame...'));
+    const frame = await manager.stopFrame(name);
 
-      console.log(chalk.green('Frame stopped!'));
-      console.log();
-      printFrame(frame);
-    } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
-      process.exit(1);
-    }
-  });
+    console.log(chalk.green('Frame stopped!'));
+    console.log();
+    printFrame(frame);
+  }));
 
 // List frames
 frame
@@ -547,145 +800,122 @@ frame
   .alias('ls')
   .description('List all frames')
   .option('-s, --status <status>', 'Filter by status')
-  .action((options: { status?: FrameStatus }) => {
-    try {
-      const manager = getFrameManager();
-      const frames = manager.listFrames(options.status);
+  .action(runCommand(async (options: { status?: FrameStatus }) => {
+    await ensureDatabase();
+    const manager = getFrameManager();
+    const frames = await manager.listFrames(options.status);
 
-      if (frames.length === 0) {
-        console.log(chalk.yellow('No frames found.'));
-        console.log(chalk.cyan('Create one with: optagon frame create <name> -w /path/to/workspace'));
-        return;
-      }
-
-      console.log(chalk.bold('Frames:'));
-      console.log();
-
-      for (const frame of frames) {
-        const statusColor = getStatusColor(frame.status);
-        console.log(
-          `  ${chalk.bold(frame.name)} ` +
-          `${statusColor(`[${frame.status}]`)} ` +
-          `${chalk.dim(`port:${frame.hostPort || 'none'}`)}`
-        );
-        console.log(`    ${chalk.dim(frame.workspacePath)}`);
-        if (frame.description) {
-          console.log(`    ${chalk.italic(frame.description)}`);
-        }
-        console.log();
-      }
-    } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
-      process.exit(1);
+    if (frames.length === 0) {
+      console.log(chalk.yellow('No frames found.'));
+      console.log(chalk.cyan('Create one with: optagon frame create <name> -w /path/to/workspace'));
+      return;
     }
-  });
+
+    console.log(chalk.bold('Frames:'));
+    console.log();
+
+    for (const frame of frames) {
+      const statusColor = getStatusColor(frame.status);
+      console.log(
+        `  ${chalk.bold(frame.name)} ` +
+        `${statusColor(`[${frame.status}]`)} ` +
+        `${chalk.dim(`port:${frame.hostPort || 'none'}`)}`
+      );
+      console.log(`    ${chalk.dim(frame.workspacePath)}`);
+      if (frame.description) {
+        console.log(`    ${chalk.italic(frame.description)}`);
+      }
+      console.log();
+    }
+  }));
 
 // Show frame details
 frame
   .command('show <name>')
   .description('Show frame details')
-  .action((name: string) => {
-    try {
-      const manager = getFrameManager();
-      const frame = manager.getFrame(name);
+  .action(runCommand(async (name: string) => {
+    await ensureDatabase();
+    const manager = getFrameManager();
+    const frame = await manager.getFrame(name);
 
-      if (!frame) {
-        console.error(chalk.red(`Frame not found: ${name}`));
-        process.exit(1);
-      }
-
-      printFrame(frame);
-
-      console.log();
-      console.log(chalk.bold('Attach command:'));
-      console.log(`  ${manager.getTmuxAttachCommand(name)}`);
-
-      if (frame.hostPort) {
-        console.log();
-        console.log(chalk.bold('Dev server URL:'));
-        console.log(`  http://localhost:${frame.hostPort}`);
-      }
-    } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
-      process.exit(1);
+    if (!frame) {
+      throw new Error(`Frame not found: ${name}`);
     }
-  });
+
+    printFrame(frame);
+
+    console.log();
+    console.log(chalk.bold('Attach command:'));
+    console.log(`  ${await manager.getTmuxAttachCommand(name)}`);
+
+    if (frame.hostPort) {
+      console.log();
+      console.log(chalk.bold('Dev server URL:'));
+      console.log(`  http://localhost:${frame.hostPort}`);
+    }
+  }));
 
 // Attach to frame
 frame
   .command('attach <name>')
   .description('Print command to attach to frame tmux session')
-  .action((name: string) => {
-    try {
-      const manager = getFrameManager();
-      const frame = manager.getFrame(name);
+  .action(runCommand(async (name: string) => {
+    await ensureDatabase();
+    const manager = getFrameManager();
+    const frame = await manager.getFrame(name);
 
-      if (!frame) {
-        console.error(chalk.red(`Frame not found: ${name}`));
-        process.exit(1);
-      }
-
-      if (frame.status !== 'running') {
-        console.error(chalk.red(`Frame '${name}' is not running. Start it first.`));
-        process.exit(1);
-      }
-
-      console.log(manager.getTmuxAttachCommand(name));
-    } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
-      process.exit(1);
+    if (!frame) {
+      throw new Error(`Frame not found: ${name}`);
     }
-  });
+
+    if (frame.status !== 'running') {
+      throw new Error(`Frame '${name}' is not running. Start it first.`);
+    }
+
+    console.log(await manager.getTmuxAttachCommand(name));
+  }));
 
 // Destroy frame
 frame
   .command('destroy <name>')
   .description('Destroy a frame (removes container and data)')
   .option('-f, --force', 'Force destroy even if running')
-  .action(async (name: string, options: { force?: boolean }) => {
-    try {
-      const manager = getFrameManager();
+  .action(runCommand(async (name: string, options: { force?: boolean }) => {
+    await ensureDatabase();
+    const manager = getFrameManager();
 
-      console.log(chalk.blue('Destroying frame...'));
-      await manager.destroyFrame(name, options.force);
+    console.log(chalk.blue('Destroying frame...'));
+    await manager.destroyFrame(name, options.force);
 
-      console.log(chalk.green(`Frame '${name}' destroyed.`));
-    } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
-      process.exit(1);
-    }
-  });
+    console.log(chalk.green(`Frame '${name}' destroyed.`));
+  }));
 
 // Events
 frame
   .command('events <name>')
   .description('Show frame events')
   .option('-n, --limit <count>', 'Number of events to show', '20')
-  .action((name: string, options: { limit: string }) => {
-    try {
-      const manager = getFrameManager();
-      const events = manager.getFrameEvents(name, parseInt(options.limit, 10));
+  .action(runCommand(async (name: string, options: { limit: string }) => {
+    await ensureDatabase();
+    const manager = getFrameManager();
+    const events = await manager.getFrameEvents(name, parseInt(options.limit, 10));
 
-      if (events.length === 0) {
-        console.log(chalk.yellow('No events found.'));
-        return;
-      }
-
-      console.log(chalk.bold('Recent events:'));
-      console.log();
-
-      for (const event of events) {
-        const date = event.createdAt.toLocaleString();
-        console.log(`  ${chalk.dim(date)} ${chalk.bold(event.eventType)}`);
-        if (event.details) {
-          console.log(`    ${chalk.dim(JSON.stringify(event.details))}`);
-        }
-      }
-    } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
-      process.exit(1);
+    if (events.length === 0) {
+      console.log(chalk.yellow('No events found.'));
+      return;
     }
-  });
+
+    console.log(chalk.bold('Recent events:'));
+    console.log();
+
+    for (const event of events) {
+      const date = event.createdAt.toLocaleString();
+      console.log(`  ${chalk.dim(date)} ${chalk.bold(event.eventType)}`);
+      if (event.details) {
+        console.log(`    ${chalk.dim(JSON.stringify(event.details))}`);
+      }
+    }
+  }));
 
 // ===================
 // TEMPLATE COMMANDS
@@ -698,123 +928,107 @@ template
   .command('list')
   .alias('ls')
   .description('List available templates')
-  .action(async () => {
-    try {
-      const loader = getTemplateLoader();
-      const templates = await loader.listTemplates();
-      const dirs = loader.getTemplateDirectories();
+  .action(runCommand(async () => {
+    const loader = getTemplateLoader();
+    const templates = await loader.listTemplates();
+    const dirs = loader.getTemplateDirectories();
 
-      if (templates.length === 0) {
-        console.log(chalk.yellow('No templates found.'));
-        console.log();
-        console.log('Template directories:');
-        console.log(`  Built-in: ${chalk.dim(dirs.builtin)}`);
-        console.log(`  User: ${chalk.dim(dirs.user)}`);
-        return;
-      }
-
-      console.log(chalk.bold('Available Templates:'));
+    if (templates.length === 0) {
+      console.log(chalk.yellow('No templates found.'));
       console.log();
-
-      for (const tmpl of templates) {
-        console.log(`  ${chalk.cyan(tmpl.name)}`);
-        if (tmpl.description) {
-          console.log(`    ${chalk.dim(tmpl.description)}`);
-        }
-        console.log(`    ${chalk.dim(`${tmpl.windows.length} window(s): ${tmpl.windows.map(w => w.name).join(', ')}`)}`);
-        console.log();
-      }
-
-      console.log(chalk.dim('Use with: optagon init --template <name>'));
-    } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
-      process.exit(1);
+      console.log('Template directories:');
+      console.log(`  Built-in: ${chalk.dim(dirs.builtin)}`);
+      console.log(`  User: ${chalk.dim(dirs.user)}`);
+      return;
     }
-  });
+
+    console.log(chalk.bold('Available Templates:'));
+    console.log();
+
+    for (const tmpl of templates) {
+      console.log(`  ${chalk.cyan(tmpl.name)}`);
+      if (tmpl.description) {
+        console.log(`    ${chalk.dim(tmpl.description)}`);
+      }
+      console.log(`    ${chalk.dim(`${tmpl.windows.length} window(s): ${tmpl.windows.map(w => w.name).join(', ')}`)}`);
+      console.log();
+    }
+
+    console.log(chalk.dim('Use with: optagon init --template <name>'));
+  }));
 
 // Show template details
 template
   .command('show <name>')
   .description('Show template details')
-  .action(async (name: string) => {
-    try {
-      const loader = getTemplateLoader();
-      const tmpl = await loader.getResolvedTemplate(name);
+  .action(runCommand(async (name: string) => {
+    const loader = getTemplateLoader();
+    const tmpl = await loader.getResolvedTemplate(name);
 
-      if (!tmpl) {
-        console.error(chalk.red(`Template not found: ${name}`));
-        console.log(chalk.cyan('Run "optagon template list" to see available templates.'));
-        process.exit(1);
-      }
-
-      console.log(chalk.bold('Template:'), chalk.cyan(tmpl.name));
-      if (tmpl.description) {
-        console.log(chalk.dim(tmpl.description));
-      }
-      console.log();
-
-      if (tmpl.inheritanceChain && tmpl.inheritanceChain.length > 1) {
-        console.log(chalk.bold('Extends:'), tmpl.inheritanceChain.slice(1).join(' → '));
-        console.log();
-      }
-
-      console.log(chalk.bold('Windows:'));
-      for (const window of tmpl.windows) {
-        console.log();
-        console.log(`  ${chalk.cyan(window.name)}`);
-        console.log(`    Command: ${chalk.dim(window.command)}`);
-        if (window.cwd) {
-          console.log(`    Working Dir: ${chalk.dim(window.cwd)}`);
-        }
-        if (window.role) {
-          console.log(`    Role: ${chalk.dim(window.role)}`);
-        }
-        if (window.inject && window.inject.length > 0) {
-          console.log(`    Inject: ${chalk.dim(window.inject.length + ' line(s)')}`);
-        }
-        if (window.briefing) {
-          console.log(`    Briefing: ${chalk.dim('configured')}`);
-        }
-      }
-
-      if (tmpl.env && Object.keys(tmpl.env).length > 0) {
-        console.log();
-        console.log(chalk.bold('Environment:'));
-        for (const [key, value] of Object.entries(tmpl.env)) {
-          console.log(`  ${key}=${chalk.dim(value)}`);
-        }
-      }
-    } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
-      process.exit(1);
+    if (!tmpl) {
+      throw new Error(`Template not found: ${name}. Run "optagon template list" to see available templates.`);
     }
-  });
+
+    console.log(chalk.bold('Template:'), chalk.cyan(tmpl.name));
+    if (tmpl.description) {
+      console.log(chalk.dim(tmpl.description));
+    }
+    console.log();
+
+    if (tmpl.inheritanceChain && tmpl.inheritanceChain.length > 1) {
+      console.log(chalk.bold('Extends:'), tmpl.inheritanceChain.slice(1).join(' → '));
+      console.log();
+    }
+
+    console.log(chalk.bold('Windows:'));
+    for (const window of tmpl.windows) {
+      console.log();
+      console.log(`  ${chalk.cyan(window.name)}`);
+      console.log(`    Command: ${chalk.dim(window.command)}`);
+      if (window.cwd) {
+        console.log(`    Working Dir: ${chalk.dim(window.cwd)}`);
+      }
+      if (window.role) {
+        console.log(`    Role: ${chalk.dim(window.role)}`);
+      }
+      if (window.inject && window.inject.length > 0) {
+        console.log(`    Inject: ${chalk.dim(window.inject.length + ' line(s)')}`);
+      }
+      if (window.briefing) {
+        console.log(`    Briefing: ${chalk.dim('configured')}`);
+      }
+    }
+
+    if (tmpl.env && Object.keys(tmpl.env).length > 0) {
+      console.log();
+      console.log(chalk.bold('Environment:'));
+      for (const [key, value] of Object.entries(tmpl.env)) {
+        console.log(`  ${key}=${chalk.dim(value)}`);
+      }
+    }
+  }));
 
 // Status command
 program
   .command('status')
   .description('Show overall status')
-  .action(() => {
-    try {
-      const manager = getFrameManager();
-      const portAllocator = getPortAllocator();
-      const runtime = getContainerRuntime();
+  .action(runCommand(async () => {
+    await ensureDatabase();
+    const manager = getFrameManager();
+    const portAllocator = getPortAllocator();
+    const runtime = getContainerRuntime();
 
-      const frames = manager.listFrames();
-      const runningCount = frames.filter(f => f.status === 'running').length;
-      const availablePorts = portAllocator.getAvailableCount();
+    const frames = await manager.listFrames();
+    const runningCount = frames.filter(f => f.status === 'running').length;
+    const availablePorts = await portAllocator.getAvailableCount();
 
-      console.log(chalk.bold('Optagon Status'));
-      console.log();
-      console.log(`  Container runtime: ${chalk.cyan(runtime.getRuntime())}`);
-      console.log(`  Total frames: ${chalk.cyan(frames.length.toString())}`);
-      console.log(`  Running: ${chalk.green(runningCount.toString())}`);
-      console.log(`  Available ports: ${chalk.cyan(availablePorts.toString())}`);
-    } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
-      process.exit(1);
-    }
-  });
+    console.log(chalk.bold('Optagon Status'));
+    console.log();
+    console.log(`  Container runtime: ${chalk.cyan(runtime.getRuntime())}`);
+    console.log(`  Total frames: ${chalk.cyan(frames.length.toString())}`);
+    console.log(`  Running: ${chalk.green(runningCount.toString())}`);
+    console.log(`  Available ports: ${chalk.cyan(availablePorts.toString())}`);
+  }));
 
 // Helper functions
 function printFrame(frame: any) {

@@ -91,6 +91,13 @@ export class ContainerRuntime {
       '-e', `OPTAGON_TILT_PORT=${tiltPort}`,
     ];
 
+    // Mount host's Claude Code credentials (read-only) for OAuth auth sharing
+    const hostClaudeCredentials = join(homedir(), '.claude', '.credentials.json');
+    if (existsSync(hostClaudeCredentials)) {
+      // Ensure target directory exists in container, mount credentials read-only
+      args.push('-v', `${hostClaudeCredentials}:/root/.claude/.credentials.json:ro,Z`);
+    }
+
     // Mount podman/docker socket for container-in-container support
     const podmanSocket = getPodmanSocketPath();
     if (podmanSocket) {
@@ -249,6 +256,64 @@ export class ContainerRuntime {
       });
 
       proc.on('error', reject);
+    });
+  }
+
+  /**
+   * Get container by name (with port information)
+   */
+  async getContainerByName(name: string): Promise<ContainerInfo | null> {
+    const containerName = name.startsWith('optagon-frame-') ? name : `optagon-frame-${name}`;
+    return new Promise((resolve) => {
+      const proc = spawn(this.runtime, [
+        'ps',
+        '-a',
+        '--filter', `name=^${containerName}$`,
+        '--format', '{{.ID}}|{{.Names}}|{{.Status}}|{{.Ports}}',
+      ]);
+
+      let stdout = '';
+
+      proc.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      proc.on('close', (code) => {
+        if (code !== 0 || !stdout.trim()) {
+          resolve(null);
+          return;
+        }
+
+        const line = stdout.trim().split('\n')[0];
+        const [id, containerFullName, statusStr, portsStr] = line.split('|');
+        let status: ContainerInfo['status'] = 'stopped';
+        if (statusStr.toLowerCase().includes('up')) {
+          status = 'running';
+        } else if (statusStr.toLowerCase().includes('exited')) {
+          status = 'exited';
+        }
+
+        // Parse ports like "127.0.0.1:33001->3000/tcp, 127.0.0.1:34001->10350/tcp"
+        const ports: { host: number; container: number }[] = [];
+        if (portsStr) {
+          const portMatches = portsStr.matchAll(/(\d+)->(\d+)/g);
+          for (const match of portMatches) {
+            ports.push({
+              host: parseInt(match[1], 10),
+              container: parseInt(match[2], 10),
+            });
+          }
+        }
+
+        resolve({
+          id,
+          name: containerFullName,
+          status,
+          ports,
+        });
+      });
+
+      proc.on('error', () => resolve(null));
     });
   }
 

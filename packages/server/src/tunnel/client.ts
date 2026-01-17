@@ -300,9 +300,9 @@ export class TunnelClient extends EventEmitter {
 
   // ============ Frame Sync ============
 
-  private syncFrames(): void {
+  private async syncFrames(): Promise<void> {
     const frameManager = getFrameManager();
-    const frames = frameManager.listFrames();
+    const frames = await frameManager.listFrames();
 
     const summaries: FrameSummary[] = frames.map((frame) => ({
       id: frame.id,
@@ -327,7 +327,7 @@ export class TunnelClient extends EventEmitter {
     const frameManager = getFrameManager();
     const terminalMux = getTerminalMux();
 
-    const frame = frameManager.getFrame(msg.frameId);
+    const frame = await frameManager.getFrame(msg.frameId);
 
     if (!frame) {
       this.send({
@@ -431,10 +431,10 @@ export class TunnelClient extends EventEmitter {
       let response: any;
 
       if (msg.path === '/frames' && msg.method === 'GET') {
-        response = frameManager.listFrames();
+        response = await frameManager.listFrames();
       } else if (msg.path.startsWith('/frames/') && msg.method === 'GET') {
         const frameId = msg.path.split('/')[2];
-        response = frameManager.getFrame(frameId);
+        response = await frameManager.getFrame(frameId);
         if (!response) {
           this.send({
             type: 'api_response',
