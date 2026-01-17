@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Personal software development server with isolated frames",
   "type": "module",
+  "engines": {
+    "bun": ">=1.0.0"
+  },
   "main": "dist/index.js",
   "bin": {
     "optagon": "src/index.ts"

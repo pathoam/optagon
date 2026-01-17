@@ -55,30 +55,37 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Bun
-RUN curl -fsSL https://bun.sh/install | bash
+# Install Bun (pinned version for reproducible builds)
+ARG BUN_VERSION=1.2.20
+RUN curl -fsSL https://bun.sh/install | bash -s "bun-v${BUN_VERSION}"
 ENV PATH="/root/.bun/bin:${PATH}"
 
 # Install pnpm
 RUN npm install -g pnpm
 
 # Install podman-docker (provides docker CLI via podman) and docker-compose
+# Pin versions for reproducible builds
+ARG DOCKER_COMPOSE_VERSION=v2.32.4
 RUN apt-get update && \
     apt-get install -y podman-docker && \
     rm -rf /var/lib/apt/lists/* && \
-    # Install docker-compose standalone
-    curl -fsSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m)" -o /usr/local/bin/docker-compose && \
+    # Install docker-compose standalone (pinned version)
+    curl -fsSL "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-linux-$(uname -m)" -o /usr/local/bin/docker-compose && \
     chmod +x /usr/local/bin/docker-compose
 
 # Install Tilt (local Kubernetes/Docker dev tool)
-RUN TILT_VERSION=$(curl -fsSL https://api.github.com/repos/tilt-dev/tilt/releases/latest | jq -r .tag_name) && \
-    curl -fsSL "https://github.com/tilt-dev/tilt/releases/download/${TILT_VERSION}/tilt.${TILT_VERSION#v}.linux.x86_64.tar.gz" | tar -xz -C /usr/local/bin tilt
+# Pin version for reproducible builds
+ARG TILT_VERSION=v0.36.0
+RUN curl -fsSL "https://github.com/tilt-dev/tilt/releases/download/${TILT_VERSION}/tilt.${TILT_VERSION#v}.linux.x86_64.tar.gz" | tar -xz -C /usr/local/bin tilt
 
 # Install Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
 
 # Install OpenCode (OpenRouter-compatible code agent)
-RUN curl -fsSL https://opencode.ai/install | bash
+# Pin version for reproducible builds
+ARG OPENCODE_VERSION=v0.0.55
+RUN mkdir -p /root/.opencode/bin && \
+    curl -fsSL "https://github.com/opencode-ai/opencode/releases/download/${OPENCODE_VERSION}/opencode-linux-x86_64.tar.gz" | tar -xz -C /root/.opencode/bin
 ENV PATH="/root/.opencode/bin:${PATH}"
 
 # Create directories
