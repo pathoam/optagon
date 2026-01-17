@@ -57,3 +57,11 @@ export function getPortAllocator(): PortAllocator {
   }
   return portAllocator;
 }
+
+/**
+ * Set the port allocator instance (for testing only)
+ * @internal
+ */
+export function _setPortAllocator(allocator: PortAllocator | null): void {
+  portAllocator = allocator;
+}

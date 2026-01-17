@@ -345,3 +345,12 @@ export async function closeStateStore(): Promise<void> {
     initPromise = null;
   }
 }
+
+/**
+ * Set the state store instance (for testing only)
+ * @internal
+ */
+export function _setStateStore(store: StateStore | null): void {
+  stateStore = store;
+  initPromise = store ? Promise.resolve() : null;
+}

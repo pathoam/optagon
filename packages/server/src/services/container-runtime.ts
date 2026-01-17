@@ -419,3 +419,11 @@ export function getContainerRuntime(): ContainerRuntime {
   }
   return containerRuntime;
 }
+
+/**
+ * Set the container runtime instance (for testing only)
+ * @internal
+ */
+export function _setContainerRuntime(runtime: ContainerRuntime | null): void {
+  containerRuntime = runtime;
+}

@@ -115,3 +115,11 @@ export function getConfigManager(): ConfigManager {
   }
   return instance;
 }
+
+/**
+ * Set the config manager instance (for testing only)
+ * @internal
+ */
+export function _setConfigManager(manager: ConfigManager | null): void {
+  instance = manager;
+}
