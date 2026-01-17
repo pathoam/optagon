@@ -2,6 +2,9 @@ import postgres from 'postgres';
 import { getConfigManager } from './config-manager.js';
 import type { Frame, FrameStatus, FrameConfig, FrameEvent, FrameEventType } from '../types/index.js';
 
+// Valid frame status values
+const VALID_STATUSES = ['created', 'starting', 'running', 'stopping', 'stopped', 'error'] as const;
+
 // SQL Schema for PostgreSQL
 const SCHEMA = `
 -- Core frame metadata
@@ -72,6 +75,25 @@ CREATE INDEX IF NOT EXISTS idx_frame_events_frame_id ON frame_events(frame_id);
 CREATE INDEX IF NOT EXISTS idx_frame_events_created_at ON frame_events(created_at);
 `;
 
+// Additional constraints added after table creation (for migration compatibility)
+const CONSTRAINTS = `
+-- Unique constraint on host_port (partial index for non-null values)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_frames_host_port_unique
+ON frames(host_port) WHERE host_port IS NOT NULL;
+
+-- Unique constraint on graphiti_group_id
+CREATE UNIQUE INDEX IF NOT EXISTS idx_frames_graphiti_group_id_unique
+ON frames(graphiti_group_id);
+
+-- Check constraint on status (valid values only)
+DO $$ BEGIN
+    ALTER TABLE frames ADD CONSTRAINT chk_frames_status
+    CHECK (status IN ('created', 'starting', 'running', 'stopping', 'stopped', 'error'));
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+`;
+
 export class StateStore {
   private sql: postgres.Sql;
   private initialized: boolean = false;
@@ -92,7 +114,12 @@ export class StateStore {
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
+    // Create tables
     await this.sql.unsafe(SCHEMA);
+
+    // Apply constraints (idempotent - safe to run multiple times)
+    await this.sql.unsafe(CONSTRAINTS);
+
     this.initialized = true;
   }
 
@@ -224,7 +251,7 @@ export class StateStore {
   async addFrameEvent(frameId: string, eventType: FrameEventType, details?: Record<string, unknown>): Promise<void> {
     await this.sql`
       INSERT INTO frame_events (frame_id, event_type, details)
-      VALUES (${frameId}, ${eventType}, ${details ? JSON.stringify(details) : null})
+      VALUES (${frameId}, ${eventType}, ${details ? this.sql.json(details) : null})
     `;
   }
 
@@ -267,9 +294,9 @@ export class StateStore {
     const now = new Date();
     await this.sql`
       INSERT INTO system_config (key, value, updated_at)
-      VALUES (${key}, ${JSON.stringify(value)}, ${now})
+      VALUES (${key}, ${this.sql.json(value)}, ${now})
       ON CONFLICT (key) DO UPDATE SET
-        value = ${JSON.stringify(value)},
+        value = ${this.sql.json(value)},
         updated_at = ${now}
     `;
   }
