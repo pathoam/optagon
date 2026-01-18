@@ -93,7 +93,7 @@ function checkFrameImage(runtime: 'podman' | 'docker'): PreflightCheck {
       name: 'Frame Image',
       status: 'fail',
       message: 'optagon/frame:latest not found',
-      hint: 'Build with: optagon image build',
+      hint: 'Build with: optagon build',
     };
   }
 }

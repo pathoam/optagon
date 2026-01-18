@@ -36,38 +36,57 @@ export class FrameManager {
     const id = uuidv4();
     const graphitiGroupId = `frame:${id}`;
 
-    // Allocate port
-    const hostPort = await portAllocator.allocate();
-
     // Create frame directory
     const frameDir = join(FRAMES_DIR, id);
     mkdirSync(frameDir, { recursive: true });
 
-    // Create frame object
-    const frame: Frame = {
-      id,
-      name: input.name,
-      description: input.description,
-      status: 'created',
-      workspacePath: input.workspacePath,
-      graphitiGroupId,
-      hostPort,
-      templateName,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
+    // Retry loop for port allocation race conditions
+    // If two frames race and both get the same port, one will fail the unique
+    // constraint on host_port. We retry up to 3 times with fresh allocations.
+    const MAX_RETRIES = 3;
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      const hostPort = await portAllocator.allocate();
 
-    // Save to database
-    const savedFrame = await store.createFrame(frame, input.config);
+      const frame: Frame = {
+        id,
+        name: input.name,
+        description: input.description,
+        status: 'created',
+        workspacePath: input.workspacePath,
+        graphitiGroupId,
+        hostPort,
+        templateName,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
 
-    // Log event
-    await store.addFrameEvent(id, 'created', {
-      workspacePath: input.workspacePath,
-      hostPort,
-      templateName,
-    });
+      try {
+        const savedFrame = await store.createFrame(frame, input.config);
 
-    return savedFrame;
+        await store.addFrameEvent(id, 'created', {
+          workspacePath: input.workspacePath,
+          hostPort,
+          templateName,
+        });
+
+        return savedFrame;
+      } catch (error) {
+        // Check if this is a port collision (unique constraint on host_port)
+        const isPortCollision = error instanceof Error &&
+          (error.message.includes('idx_frames_host_port_unique') ||
+           error.message.includes('duplicate key') && error.message.includes('host_port'));
+
+        if (isPortCollision && attempt < MAX_RETRIES) {
+          // Port was taken by a concurrent create, retry with fresh allocation
+          continue;
+        }
+
+        throw error;
+      }
+    }
+
+    // This should never be reached due to the throw in the loop
+    throw new Error('Failed to allocate port after maximum retries');
   }
 
   /**

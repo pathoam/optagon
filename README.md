@@ -31,7 +31,7 @@ cd packages/server
 bun run src/index.ts db start
 
 # Build the frame image (first time only)
-bun run src/index.ts image build
+bun run src/index.ts build
 
 # Check prerequisites
 bun run src/index.ts doctor
@@ -105,7 +105,7 @@ Preflight Checks
 **Common issues:**
 
 - **Database not connected**: Run `optagon db start`
-- **Frame image missing**: Run `optagon image build`
+- **Frame image missing**: Run `optagon build`
 - **Container runtime missing**: Install podman or docker
 
 ## License
