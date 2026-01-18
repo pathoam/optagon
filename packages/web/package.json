@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@optagon/protocol": "workspace:*",
     "@clerk/clerk-js": "^5.35.0",
     "@solidjs/router": "^0.15.3",
     "solid-js": "^1.9.4",

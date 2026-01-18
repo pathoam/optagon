@@ -19,4 +19,4 @@ export {
   type TerminalSession,
 } from './terminal-mux.js';
 
-export * from './protocol.js';
+export * from '@optagon/protocol';

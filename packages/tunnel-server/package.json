@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@optagon/protocol": "workspace:*",
     "@clerk/backend": "^2.29.2",
     "hono": "^4.0.0"
   },

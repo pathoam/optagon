@@ -22,7 +22,7 @@ import type {
   TerminalCloseMessage,
   TerminalOpenMessage,
   ApiRequestMessage,
-} from './protocol';
+} from '@optagon/protocol';
 
 const PORT = parseInt(process.env.PORT || '3000');
 

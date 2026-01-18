@@ -4,7 +4,8 @@ import type {
   PwaToRelayMessage,
   FrameSummary,
   DevServerSummary,
-} from './protocol';
+} from '@optagon/protocol';
+import { decodeData } from '@optagon/protocol';
 import { connectionConfig } from './connection-config';
 
 export type ConnectionState =
@@ -142,8 +143,7 @@ function createTunnel() {
       case 'terminal_data': {
         const handler = terminalHandlers.get(msg.channelId);
         if (handler) {
-          // Decode base64 data
-          handler.onData(atob(msg.data));
+          handler.onData(decodeData(msg.data));
         }
         break;
       }

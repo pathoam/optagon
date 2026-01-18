@@ -18,8 +18,8 @@ import type {
   TerminalResizeMessage,
   TerminalCloseMessage,
   ApiRequestMessage,
-} from './protocol.js';
-import { encodeTerminalData, decodeTerminalData } from './protocol.js';
+} from '@optagon/protocol';
+import { encodeTerminalData, decodeTerminalData } from '@optagon/protocol';
 
 export interface TunnelClientConfig {
   relayUrl: string;       // e.g., wss://optagon.ai/tunnel

@@ -1,5 +1,5 @@
 import { A } from '@solidjs/router';
-import type { FrameSummary } from '~/lib/protocol';
+import type { FrameSummary } from '@optagon/protocol';
 
 interface FrameCardProps {
   frame: FrameSummary;

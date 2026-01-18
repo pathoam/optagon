@@ -54,7 +54,8 @@ export async function exit(code: number): Promise<never> {
 export async function exitWithError(message: string, details?: string): Promise<never> {
   log.error(message);
   if (details) {
-    log.dim(`  ${details}`);
+    // Use stderr for error details so tests can find them
+    console.error(chalk.dim(`  ${details}`));
   }
   return exit(1);
 }

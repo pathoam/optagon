@@ -11,7 +11,7 @@ import type {
   DevServerSummary,
   RelayToClientMessage,
   RelayToPwaMessage,
-} from './protocol';
+} from '@optagon/protocol';
 
 export interface ServerConnection {
   ws: ServerWebSocket<WebSocketData>;

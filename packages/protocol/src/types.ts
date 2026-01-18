@@ -1,45 +1,4 @@
-/**
- * Tunnel Protocol Types
- *
- * CANONICAL SOURCE - This is the authoritative definition of the protocol.
- *
- * These types define the WebSocket message format between:
- * - Optagon servers (tunnel clients) running at user's home
- * - Tunnel relay server running at optagon.ai
- * - PWA clients connecting through the relay
- *
- * PROTOCOL DUPLICATION:
- * Currently this file is duplicated in:
- * - packages/server/src/tunnel/protocol.ts (subset for client)
- * - packages/web/src/lib/protocol.ts (subset for PWA)
- *
- * TODO: Create @optagon/protocol shared package to eliminate duplication.
- * When making protocol changes, update all three files until the shared
- * package is created.
- */
-
 // ============ Connection Lifecycle ============
-//
-// AUTH MODE CONVERGENCE PLAN:
-// Currently two auth flows exist:
-//
-// 1. simple_auth (Phase 1 - development/testing):
-//    - Client sends serverId + serverName
-//    - Server accepts without verification
-//    - Used when Clerk is not configured
-//
-// 2. auth (Phase 2 - production with Clerk):
-//    - Client sends serverId + timestamp + signature
-//    - Server verifies signature against registered public key
-//    - Server associates connection with user who registered the key
-//
-// MIGRATION PATH:
-// - CLI: `tunnel setup` generates keypair, `tunnel register` binds it to Clerk account
-// - PWA: Signs in with Clerk, sees registered servers
-// - When Clerk is configured, simple_auth is rejected for registered servers
-// - Unregistered servers can still use simple_auth in dev mode
-//
-// Future: Remove simple_auth once all servers use proper registration
 
 export interface AuthMessage {
   type: 'auth';
@@ -61,7 +20,6 @@ export interface AuthErrorMessage {
 }
 
 // Simplified auth for development/testing (no Clerk verification)
-// See AUTH MODE CONVERGENCE PLAN above
 export interface SimpleAuthMessage {
   type: 'simple_auth';
   serverId: string;
@@ -177,7 +135,7 @@ export interface ApiResponseMessage {
   body?: string;
 }
 
-// ============ Union Types ============
+// ============ Union Types by Direction ============
 
 // Messages from optagon-server (tunnel client) to tunnel-server
 export type ClientToRelayMessage =
@@ -232,12 +190,3 @@ export type TunnelMessage =
   | PwaToRelayMessage
   | RelayToPwaMessage;
 
-// ============ Helpers ============
-
-export function encodeTerminalData(data: string): string {
-  return Buffer.from(data).toString('base64');
-}
-
-export function decodeTerminalData(data: string): string {
-  return Buffer.from(data, 'base64').toString();
-}
