@@ -13,6 +13,8 @@ import { getTemplateLoader } from './services/template-loader.js';
 import { getFrameInitializer } from './services/frame-initializer.js';
 import { initializeStateStore, isDatabaseReady, closeStateStore } from './services/state-store.js';
 import { createTunnelClient, getTunnelClient, destroyTunnelClient, type TunnelStatus } from './tunnel/index.js';
+import { exit, exitWithError, withCleanup, log } from './cli/logger.js';
+import { runPreflightChecks, printPreflightResults } from './cli/preflight.js';
 import type { FrameStatus } from './types/index.js';
 
 const program = new Command();
@@ -130,20 +132,9 @@ function findComposeFile(): string | null {
   return null;
 }
 
-// Command wrapper that handles cleanup and exit
-function runCommand(fn: (...args: any[]) => Promise<void>): (...args: any[]) => Promise<void> {
-  return async (...args: any[]) => {
-    try {
-      await fn(...args);
-      await closeStateStore();
-      process.exit(0);
-    } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : error);
-      await closeStateStore();
-      process.exit(1);
-    }
-  };
-}
+// Command wrapper - delegates to withCleanup from cli/logger.ts
+// Kept for backwards compatibility, new commands should use withCleanup directly
+const runCommand = withCleanup;
 
 // ===================
 // SIMPLIFIED COMMANDS
@@ -1427,5 +1418,21 @@ tunnel
       process.exit(1);
     }
   });
+
+// ===================
+// DIAGNOSTIC COMMANDS
+// ===================
+
+program
+  .command('doctor')
+  .description('Check system prerequisites and configuration')
+  .action(withCleanup(async () => {
+    const result = await runPreflightChecks();
+    printPreflightResults(result);
+
+    if (!result.passed) {
+      await exit(1);
+    }
+  }));
 
 program.parse();
